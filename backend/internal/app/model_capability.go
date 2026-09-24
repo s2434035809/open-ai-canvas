@@ -148,6 +148,12 @@ func DefaultImageCapabilityConfig(protocol string, modelName string) *ImageCapab
 		MaxOutputs:            15,
 	}
 	switch model.ChannelInterfaceType(protocol) {
+	case model.ChannelInterfaceQwenImage21:
+		// Qwen-Image-2.1 私有服务支持原生透明 PNG，参考图走 ref_images，单次只接受一张输出。
+		image.References.MaxImages = 10
+		image.References.MaskSupported = false
+		image.Quality = ImageQualityConfig{Supported: false, Default: "auto"}
+		image.MaxOutputs = 1
 	case model.ChannelInterfaceGrokImage:
 		image.References.MaxImages = 1
 		image.References.MaskSupported = false

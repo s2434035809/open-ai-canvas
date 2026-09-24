@@ -11,7 +11,7 @@ import { aiApiUrl, aiHeaders, imageChannelTransport, postChannelJSON, postGemini
 
 const IMAGE_OUTPUT_FORMAT = "png";
 import type { AiTextMessage, GeminiPart, ImageApiResponse, RequestOptions, ResponseApiPayload, ResponseFunctionTool, ResponseInputMessage, ToolChoice, ToolResponseResult } from "@/services/api/image-contracts";
-import { normalizeGrokImageResolution, normalizeQuality, normalizeVolcengineArkImageSize, resolveImageRequestSize, validateImageCapability } from "@/services/api/image-validation";
+import { normalizeGrokImageResolution, normalizeQuality, normalizeVolcengineArkImageSize, resolveImageRequestSize, resolveQwenImageRequestSize, validateImageCapability } from "@/services/api/image-validation";
 import { parseGeminiImagePayload, parseImagePayload, readAxiosError } from "@/services/api/image-response";
 import { toChatCompletionMessages, toChatCompletionToolChoice, toClaudeBody, toGeminiBody, toGeminiToolOptions, toResponseInput, toResponseTool, withSystemMessage } from "@/services/api/image-protocols";
 import { requestGeminiStreamingResponse, requestStreamingChatCompletion, requestStreamingClaude, requestStreamingResponse } from "@/services/api/image-streaming";
@@ -93,6 +93,27 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
             throw new Error(readAxiosError(error, "Grok 图片生成失败"));
         }
     }
+    if (requestConfig.interfaceType === "qwen-image-2-1") {
+        try {
+            const size = resolveQwenImageRequestSize(normalizedImage.size);
+            const responseData = await postChannelJSON<ImageApiResponse>(
+                requestConfig,
+                aiApiUrl(requestConfig, "/images/generations"),
+                {
+                    model: requestConfig.model,
+                    prompt: withSystemPrompt(requestConfig, prompt),
+                    ...(size ? { size } : {}),
+                    ...(normalizedImage.transparentBackground === "true" ? { background: "transparent" } : {}),
+                    output_format: IMAGE_OUTPUT_FORMAT,
+                    response_format: "url",
+                },
+                options,
+            );
+            return parseImagePayload(responseData);
+        } catch (error) {
+            throw new Error(readAxiosError(error, "Qwen-Image-2.1 图片生成失败"));
+        }
+    }
     const quality = imageProfile.quality.supported && normalizedImage.quality !== "auto" ? normalizeQuality(normalizedImage.quality) || normalizedImage.quality : undefined;
     const requestSize = resolveImageRequestSize(imageProfile, quality, normalizedImage.size);
     const isVolcengineArk = isVolcengineArkImageProtocol(requestConfig.interfaceType);
@@ -128,6 +149,12 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
 async function grokImageInputURL(image: ReferenceImage) {
     const candidate = image.url?.trim() || "";
     if (/^https?:\/\//i.test(candidate)) return candidate;
+    return imageToDataUrl(image);
+}
+
+async function qwenImageInput(image: ReferenceImage) {
+    const candidate = image.url?.trim() || "";
+    if (/^(?:https?:\/\/|data:image\/)/i.test(candidate)) return candidate;
     return imageToDataUrl(image);
 }
 
@@ -173,6 +200,30 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
             return parseImagePayload(response);
         } catch (error) {
             throw new Error(readAxiosError(error, "Grok 图片编辑失败"));
+        }
+    }
+    if (requestConfig.interfaceType === "qwen-image-2-1") {
+        if (mask) throw new Error("Qwen-Image-2.1 图片协议不支持蒙版编辑，请移除蒙版后重试");
+        try {
+            const images = await Promise.all(references.map(qwenImageInput));
+            const size = resolveQwenImageRequestSize(normalizedImage.size);
+            const response = await postChannelJSON<ImageApiResponse>(
+                requestConfig,
+                aiApiUrl(requestConfig, "/images/generations"),
+                {
+                    model: requestConfig.model,
+                    prompt: withSystemPrompt(requestConfig, requestPrompt),
+                    ...(images.length ? { ref_images: images } : {}),
+                    ...(size ? { size } : {}),
+                    ...(normalizedImage.transparentBackground === "true" ? { background: "transparent" } : {}),
+                    output_format: IMAGE_OUTPUT_FORMAT,
+                    response_format: "url",
+                },
+                options,
+            );
+            return parseImagePayload(response);
+        } catch (error) {
+            throw new Error(readAxiosError(error, "Qwen-Image-2.1 图片编辑失败"));
         }
     }
     if (isVolcengineArkImageProtocol(requestConfig.interfaceType)) {

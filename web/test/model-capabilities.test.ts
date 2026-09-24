@@ -3,6 +3,7 @@ import test from "node:test";
 
 // Bun 直接执行 TypeScript 测试时需要保留扩展名；生产 tsconfig 不包含 test/。
 import { DEFAULT_VIDEO_PROMPT_MAX_CHARS, defaultModelCapabilityConfig, normalizeVideoValue } from "../src/lib/model-capabilities.ts";
+import { resolveQwenImageRequestSize } from "../src/services/api/image-validation.ts";
 
 test("text multimodal capability is not guessed from a model name", () => {
     for (const model of ["gpt-4o", "gemini-2.5-pro", "doubao-seed"]) {
@@ -38,4 +39,11 @@ test("raising the video default leaves text and image limits untouched", () => {
     const profile = defaultModelCapabilityConfig("seedance-videos-compatible", "sd-2.5");
     assert.equal(profile.text!.references.promptMaxChars, 32000);
     assert.equal(profile.image!.references.promptMaxChars, 32000);
+});
+
+test("Qwen image ratios use the provider's recommended pixel sizes", () => {
+    assert.equal(resolveQwenImageRequestSize("16:9"), "1360x768");
+    assert.equal(resolveQwenImageRequestSize("9:16"), "768x1360");
+    assert.equal(resolveQwenImageRequestSize("21:9"), "1568x672");
+    assert.equal(resolveQwenImageRequestSize("auto"), undefined);
 });

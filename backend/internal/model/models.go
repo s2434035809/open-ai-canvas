@@ -62,6 +62,7 @@ const (
 	ChannelInterfaceOpenAIResponse              ChannelInterfaceType = "openai-response"
 	ChannelInterfaceClaudeAPI                   ChannelInterfaceType = "claude-api"
 	ChannelInterfaceOpenAIImage                 ChannelInterfaceType = "openai-image"
+	ChannelInterfaceQwenImage21                 ChannelInterfaceType = "qwen-image-2-1"
 	ChannelInterfaceGrokImage                   ChannelInterfaceType = "grok-image"
 	ChannelInterfaceVolcengineArkImage          ChannelInterfaceType = "volcengine-ark-image"
 	ChannelInterfaceVolcengineArkAgentPlanImage ChannelInterfaceType = "volcengine-ark-agent-plan-image"

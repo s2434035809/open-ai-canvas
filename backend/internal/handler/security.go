@@ -221,7 +221,7 @@ func authorizeSystemProxy(channel *model.ModelChannel, protocol model.ChannelInt
 		}
 		return nil
 	}
-	if method != http.MethodPost || !openAIPostEndpoints[requestPath] {
+	if method != http.MethodPost || (!openAIPostEndpoints[requestPath] && !(protocol == model.ChannelInterfaceQwenImage21 && strings.HasSuffix(requestPath, "/images/generations"))) {
 		return errors.New("系统渠道不允许访问该上游接口")
 	}
 	if protocol != "" && !interfaceAllowsProxyPath(protocol, requestPath) {
@@ -244,6 +244,8 @@ func interfaceAllowsProxyPath(interfaceType model.ChannelInterfaceType, requestP
 		return requestPath == "/messages"
 	case model.ChannelInterfaceOpenAIImage, model.ChannelInterfaceGrokImage:
 		return requestPath == "/images/generations" || requestPath == "/images/edits"
+	case model.ChannelInterfaceQwenImage21:
+		return strings.HasSuffix(requestPath, "/images/generations")
 	case model.ChannelInterfaceVolcengineArkImage, model.ChannelInterfaceVolcengineArkAgentPlanImage:
 		return requestPath == "/images/generations"
 	case model.ChannelInterfaceOpenAIAudio:

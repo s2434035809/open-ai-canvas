@@ -87,6 +87,8 @@ func OfficialDeclarativeImageInterface(interfaceType string) (string, bool) {
 		return "Gemini Images", true
 	case string(model.ChannelInterfaceOpenAIImage):
 		return "OpenAI Images", true
+	case string(model.ChannelInterfaceQwenImage21):
+		return "Qwen-Image-2.1", true
 	case string(model.ChannelInterfaceGrokImage):
 		return "Grok Images", true
 	case string(model.ChannelInterfaceVolcengineArkImage):

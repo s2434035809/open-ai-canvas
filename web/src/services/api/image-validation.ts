@@ -20,6 +20,16 @@ const IMAGE_MAX_PIXELS = 8294400;
 const IMAGE_MAX_EDGE = 3840;
 const IMAGE_MAX_RATIO = 3;
 const VOLCENGINE_ARK_IMAGE_MAX_PIXELS = 4624220;
+const QWEN_IMAGE_SIZE_BY_RATIO: Record<string, string> = {
+    "1:1": "1024x1024",
+    "9:16": "768x1360",
+    "16:9": "1360x768",
+    "3:2": "1248x832",
+    "2:3": "832x1248",
+    "4:3": "1184x880",
+    "3:4": "880x1184",
+    "21:9": "1568x672",
+};
 
 export function normalizeQuality(quality: string) {
     const value = quality.trim().toLowerCase();
@@ -130,6 +140,13 @@ export function resolveImageRequestSize(profile: ImageCapabilityConfig, quality:
     }
     const value = request.parameter === "size" ? resolveRequestSize(quality, request.value) : resolveAspectRatio(request.value);
     return value ? { parameter: request.parameter, value } : undefined;
+}
+
+/** Resolve Qwen-Image-2.1 ratios to the provider's recommended dimensions. */
+export function resolveQwenImageRequestSize(size: string | undefined) {
+    const value = (size || "").trim().toLowerCase();
+    if (!value || value === "auto") return undefined;
+    return QWEN_IMAGE_SIZE_BY_RATIO[value] || resolveRequestSize(undefined, value);
 }
 
 export function validateImageCapability(profile: ImageCapabilityConfig, references: ReferenceImage[], mask?: ReferenceImage) {
