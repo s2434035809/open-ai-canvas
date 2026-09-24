@@ -249,7 +249,7 @@
     --canvas-inset-x: 16px;             /* 浮层水平安全区（dock inset、顶栏 px）*/
     --canvas-inset-y: 16px;             /* 浮层垂直安全区（dock 底部）*/
     --canvas-topbar-h: 64px;            /* 顶部栏高度 */
-    --canvas-topbar-offset: 72px;       /* 顶栏下方浮层顶部偏移（topbar-h + 8px 间距）*/
+    --canvas-topbar-offset: calc(var(--canvas-topbar-h) + 8px); /* 顶栏下方浮层顶部偏移 */
     --canvas-dock-popover-offset: 50px; /* dock 弹出面板底部偏移 */
 
     /* --- 7. 动效（对应 #99 动效 token）--- */
@@ -295,12 +295,16 @@
     --glass-alpha-strong: 0.97;
     --glass-border-alpha: 0.78;
 
-    /* 站点皮肤对登录页的组件级入口；经典皮肤保持原始值。 */
-    --auth-page-bg: #08090c;
-    --auth-panel-bg: #0b0c10;
-    --auth-card-bg: rgba(18, 19, 24, 0.94);
-    --auth-accent: rgba(147, 197, 253, 0.8);
-    --auth-muted: rgba(255, 255, 255, 0.45);
+    /* 登录表单跟随全局明暗主题；品牌影片保留独立深色舞台。 */
+    --auth-page-bg: #ffffff;
+    --auth-panel-bg: #f7f7f7;
+    --auth-card-bg: #ffffff;
+    --auth-accent: #2563eb;
+    --auth-muted: #737373;
+    /* 协议勾选框的填充色与对勾色。必须成对维护：两者相近会在某一主题下
+       退化成看不见的勾选态。深色主题下这里与 --foreground 的白色相反。 */
+    --auth-check-bg: #171717;
+    --auth-check-fg: #ffffff;
 
     /* 可配置皮肤的组件入口。经典主题保持这些项目原始值；自定义主题在
        React 启动前由公开外观配置覆盖，页面和组件只消费这些语义变量。 */
@@ -359,6 +363,45 @@
 
 .auth-scene {
     background: var(--auth-page-bg);
+    color: var(--foreground);
+}
+
+.auth-scene-hero {
+    background: var(--auth-panel-bg);
+    color: var(--foreground);
+}
+
+.auth-scene-hero-overlay {
+    background: linear-gradient(
+        180deg,
+        color-mix(in srgb, var(--auth-panel-bg) 40%, transparent),
+        transparent 42%,
+        color-mix(in srgb, var(--auth-panel-bg) 76%, transparent)
+    );
+    pointer-events: none;
+}
+
+.auth-scene-brand,
+.auth-scene-brand:hover {
+    color: inherit;
+}
+
+.auth-scene-hero-control {
+    border: 1px solid color-mix(in srgb, var(--foreground) 16%, transparent);
+    background: color-mix(in srgb, var(--auth-panel-bg) 78%, transparent);
+    color: color-mix(in srgb, var(--foreground) 82%, transparent);
+}
+
+.auth-scene-hero-control:hover {
+    background: color-mix(in srgb, var(--auth-panel-bg) 92%, transparent);
+}
+
+.auth-scene-hero-muted {
+    color: color-mix(in srgb, var(--foreground) 64%, transparent);
+}
+
+.auth-scene-hero-title {
+    color: var(--foreground);
 }
 
 .auth-scene-form-pane {
@@ -371,7 +414,7 @@
 
 .auth-scene-card {
     background: var(--auth-card-bg);
-    box-shadow: 0 28px 80px rgba(0, 0, 0, 0.34);
+    box-shadow: var(--elevation-card-hover);
 }
 
 .auth-scene-eyebrow {
@@ -382,16 +425,213 @@
     color: var(--auth-muted);
 }
 
+.auth-scene-label {
+    color: color-mix(in srgb, var(--foreground) 72%, transparent);
+}
+
+.auth-scene-icon {
+    color: var(--auth-muted);
+}
+
+.auth-scene-link {
+    color: var(--auth-accent);
+}
+
+.auth-scene-link:hover {
+    color: var(--foreground);
+}
+
+.auth-scene-link:focus-visible {
+    outline: var(--focus-ring-width) solid var(--ring);
+    outline-offset: 3px;
+}
+
+.auth-scene-divider.ant-divider {
+    border-color: var(--border);
+    color: var(--auth-muted);
+}
+
+.auth-scene-notice {
+    --auth-notice-color: var(--palette-status-warning);
+    border-color: color-mix(in srgb, var(--auth-notice-color) 24%, transparent);
+    background: color-mix(in srgb, var(--auth-notice-color) 6%, transparent);
+    color: var(--foreground);
+}
+
+.auth-scene-notice[data-tone="blue"] {
+    --auth-notice-color: var(--palette-status-loading);
+}
+
+.auth-scene-notice > span:first-child {
+    color: var(--auth-notice-color);
+}
+
 .auth-scene-return {
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    background: rgba(255, 255, 255, 0.04);
-    color: rgba(255, 255, 255, 0.58);
+    border: var(--control-border-width) solid var(--border);
+    background: color-mix(in srgb, var(--foreground) 4%, transparent);
+    color: var(--auth-muted);
 }
 
 .auth-scene-return:hover {
-    border-color: rgba(255, 255, 255, 0.2);
-    background: rgba(255, 255, 255, 0.08);
-    color: #fff;
+    border-color: var(--input);
+    background: color-mix(in srgb, var(--foreground) 8%, transparent);
+    color: var(--foreground);
+}
+
+/* --- 注册页协议同意行 ---------------------------------------------------------
+   勾选热区必须覆盖“文字 + 协议名”整段，但协议名同时是可点击的阅读入口，
+   因此热区由 label 承担，协议名按钮用 stopPropagation 之外的方式独立可点：
+   这里只做视觉与排布，行为仍由 React 侧控制。 */
+.auth-agreement-row {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    border: var(--control-border-width) solid transparent;
+    border-radius: var(--r-sm);
+    color: var(--auth-muted);
+    font-size: var(--fs-label);
+    line-height: 1.65;
+    transition:
+        border-color var(--motion-instant) ease-out,
+        background-color var(--motion-instant) ease-out,
+        color var(--motion-instant) ease-out;
+}
+
+.auth-agreement-row:hover {
+    background: color-mix(in srgb, var(--foreground) 4%, transparent);
+}
+
+/* 已勾选时用极轻的强调底色标记“这一步已完成”，不做成第二主色。 */
+.auth-agreement-row[data-accepted="true"] {
+    border-color: color-mix(in srgb, var(--foreground) 10%, transparent);
+    background: color-mix(in srgb, var(--foreground) 4.5%, transparent);
+    color: color-mix(in srgb, var(--foreground) 78%, transparent);
+}
+
+/* 未勾选时给协议名一个克制的提示底色，指向“这里还没有同意”。 */
+.auth-agreement-row[data-accepted="false"] .auth-agreement-link {
+    text-decoration-line: underline;
+    text-decoration-color: color-mix(in srgb, var(--auth-accent) 42%, transparent);
+    text-decoration-thickness: 1px;
+    text-underline-offset: 3px;
+}
+
+.auth-agreement-row .ant-checkbox-wrapper {
+    flex: 0 0 auto;
+    margin-inline-end: 0;
+    color: inherit;
+    font-size: inherit;
+    line-height: inherit;
+}
+
+/* AntD 默认把 checkbox 行高 22px 与文案首行错开 1px 左右，这里统一到首行。 */
+.auth-agreement-row .ant-checkbox {
+    align-self: flex-start;
+    top: 0.1em;
+}
+
+.auth-agreement-row .ant-checkbox + span {
+    padding-inline-start: var(--space-2);
+    padding-inline-end: 0;
+}
+
+.auth-agreement-label {
+    color: inherit;
+}
+
+.auth-agreement-link {
+    display: inline;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--auth-accent);
+    font: inherit;
+    line-height: inherit;
+    text-align: start;
+    transition: color var(--motion-instant) ease-out;
+}
+
+.auth-agreement-link:hover {
+    color: var(--foreground);
+}
+
+.auth-agreement-link:focus-visible {
+    border-radius: 3px;
+    outline: var(--focus-ring-width) solid var(--ring);
+    outline-offset: 3px;
+}
+
+/* --- 协议阅读弹窗 -------------------------------------------------------------
+   长条款需要稳定的阅读列宽和可预期的滚动边界；正文段落之间用间距而不是
+   空行撑开，避免后台多段文本被渲染成松散的空洞。 */
+.auth-agreement-modal .ant-modal-container {
+    border-radius: var(--r-lg);
+}
+
+.auth-agreement-modal .ant-modal-header {
+    margin-bottom: var(--space-1);
+}
+
+.auth-agreement-modal .ant-modal-title {
+    font-size: var(--fs-title-sm, 16px);
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    line-height: 1.5;
+}
+
+.auth-agreement-body {
+    max-height: min(56vh, 460px);
+    overflow-y: auto;
+    padding-inline-end: var(--space-3);
+    overscroll-behavior: contain;
+    color: color-mix(in srgb, var(--foreground) 74%, transparent);
+    font-size: var(--fs-body, 13px);
+    line-height: 1.85;
+}
+
+.auth-agreement-body p {
+    margin: 0;
+}
+
+.auth-agreement-body p + p {
+    margin-top: var(--space-4);
+}
+
+/* 启用“一、二、三”式条目标题时，标题段单独加重，正文段保持常规字重。 */
+.auth-agreement-body p[data-role="heading"] {
+    margin-top: var(--space-5);
+    color: var(--foreground);
+    font-weight: 600;
+}
+
+.auth-agreement-body p[data-role="heading"]:first-child {
+    margin-top: 0;
+}
+
+.auth-agreement-empty {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-4) var(--space-3);
+    border: var(--control-border-width) dashed color-mix(in srgb, var(--foreground) 16%, transparent);
+    border-radius: var(--r-md);
+    color: var(--auth-muted);
+    font-size: var(--fs-label);
+    justify-content: center;
+}
+
+.auth-agreement-meta {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    margin-top: var(--space-4);
+    padding-top: var(--space-3);
+    border-top: var(--control-border-width) solid var(--border);
+    color: var(--auth-muted);
+    font-size: var(--fs-micro, 11px);
+    letter-spacing: 0.01em;
 }
 
 .site-compliance-footer {
@@ -433,15 +673,15 @@
 
 .site-compliance-footer.is-auth {
     min-height: 54px;
-    border-top: 1px solid rgba(255, 255, 255, 0.08);
+    border-top: var(--control-border-width) solid var(--border);
     background: color-mix(in srgb, var(--auth-panel-bg) 88%, transparent);
-    color: rgba(255, 255, 255, 0.48);
+    color: var(--auth-muted);
     backdrop-filter: blur(14px);
 }
 
 .site-compliance-footer.is-auth a:hover,
 .site-compliance-footer.is-auth a:focus-visible {
-    color: rgba(255, 255, 255, 0.86);
+    color: var(--foreground);
 }
 
 @media (max-width: 640px) {
@@ -714,6 +954,15 @@
 
 .dark {
     --background: #0f0f0f;
+    --auth-page-bg: #08090c;
+    --auth-panel-bg: #0b0c10;
+    --auth-card-bg: #121318;
+    --auth-accent: #93c5fd;
+    --auth-muted: #8a8b91;
+    /* 深色主题下勾选框用浅底 + 深勾，与浅色主题的深底 + 白勾形成互补；
+       直接复用 --foreground 会得到白底白勾。 */
+    --auth-check-bg: #e5e5e5;
+    --auth-check-fg: #171717;
     --foreground: #ffffff;
     --border: #222222;
     --ring: oklch(0.556 0 0);
@@ -1606,9 +1855,9 @@
         --workspace-accent-soft: rgba(17, 17, 17, 0.06);
         --workspace-nav-active-bg: rgba(17, 17, 17, 0.075);
         --workspace-nav-active-hover-bg: rgba(17, 17, 17, 0.11);
-        --workspace-sidebar-width: 312px;
-        --workspace-sidebar-nav-width: 312px;
-        --workspace-sidebar-collapsed-width: 86px;
+        --workspace-sidebar-width: 200px;
+        --workspace-sidebar-nav-width: 200px;
+        --workspace-sidebar-collapsed-width: 64px;
         --workspace-shell-gutter: 0px;
         --workspace-card-gap: 0px;
         --workspace-topbar-height: 56px;
@@ -1634,10 +1883,10 @@
 
     /* 画布编辑器保持独立的全屏工作区，但沿用用户端的安全区和控件密度。 */
     .app-user-workspace.app-spatial-workspace {
-        --canvas-topbar-h: 64px;
-        --canvas-inset-x: 16px;
-        --canvas-inset-y: 16px;
-        --canvas-dock-popover-offset: 50px;
+        --canvas-topbar-h: 56px;
+        --canvas-inset-x: 12px;
+        --canvas-inset-y: 12px;
+        --canvas-dock-popover-offset: 46px;
     }
 
     /* 画布编辑器和管理后台不继承用户端的圆角卡片外壳。 */
@@ -6841,13 +7090,13 @@ html:not(.dark) .creation-studio-control[aria-expanded="true"] { background: #e7
         justify-content: center;
         margin: 0 !important;
         padding: 8px 0 12px !important;
-        color: rgba(255, 255, 255, 0.38);
+        color: var(--auth-muted);
         font-weight: 500;
         transition: color var(--motion-instant) ease-out;
     }
 
     .auth-card-tabs .ant-tabs-tab:hover {
-        color: rgba(255, 255, 255, 0.68);
+        color: var(--foreground);
     }
 
     .auth-card-tabs .ant-tabs-tab-active::after {
@@ -6857,19 +7106,19 @@ html:not(.dark) .creation-studio-control[aria-expanded="true"] { background: #e7
         width: 20px;
         height: 2px;
         border-radius: 1px;
-        background: rgba(255, 255, 255, 0.82);
+        background: var(--foreground);
         content: "";
         transform: translateX(-50%);
     }
 
     .auth-card-tabs .ant-tabs-tab-active .ant-tabs-tab-btn {
-        color: rgba(255, 255, 255, 0.94) !important;
+        color: var(--foreground) !important;
         text-shadow: none;
     }
 
     .auth-card-tabs .ant-tabs-tab-btn:focus-visible {
         border-radius: 3px;
-        outline: 1px solid rgba(255, 255, 255, 0.48);
+        outline: var(--focus-ring-width) solid var(--ring);
         outline-offset: 3px;
     }
 
@@ -6877,39 +7126,158 @@ html:not(.dark) .creation-studio-control[aria-expanded="true"] { background: #e7
         display: none;
     }
 
-    .auth-card-dark :where(.ant-input, .ant-input-affix-wrapper) {
+    .auth-scene-card :where(.ant-input, .ant-input-affix-wrapper) {
         border-color: transparent !important;
-        background: rgba(255, 255, 255, 0.055) !important;
+        background: color-mix(in srgb, var(--foreground) 5.5%, transparent) !important;
         box-shadow: none !important;
         transition: border-color var(--motion-instant) ease-out, background-color var(--motion-instant) ease-out !important;
     }
 
-    .auth-card-dark .ant-input-affix-wrapper > .ant-input {
+    .auth-scene-card .ant-input-affix-wrapper > .ant-input {
         background: transparent !important;
     }
 
-    .auth-card-dark :where(.ant-input:hover, .ant-input-affix-wrapper:hover) {
-        border-color: rgba(255, 255, 255, 0.08) !important;
-        background: rgba(255, 255, 255, 0.07) !important;
+    .auth-scene-card :where(.ant-input:hover, .ant-input-affix-wrapper:hover) {
+        border-color: var(--border) !important;
+        background: color-mix(in srgb, var(--foreground) 7%, transparent) !important;
     }
 
-    .auth-card-dark :where(.ant-input:focus, .ant-input-focused, .ant-input-affix-wrapper-focused) {
-        border-color: transparent !important;
-        background: rgba(255, 255, 255, 0.085) !important;
+    .auth-scene-card :where(.ant-input:focus, .ant-input-focused, .ant-input-affix-wrapper-focused) {
+        border-color: var(--ring) !important;
+        background: color-mix(in srgb, var(--foreground) 8.5%, transparent) !important;
         outline: none !important;
+        box-shadow: 0 0 0 var(--focus-ring-width) color-mix(in srgb, var(--ring) 18%, transparent) !important;
+    }
+
+    .auth-scene-card .ant-input-affix-wrapper-focused .ant-input-prefix svg {
+        color: var(--foreground) !important;
+    }
+
+    .auth-scene-card input:-webkit-autofill,
+    .auth-scene-card input:-webkit-autofill:hover,
+    .auth-scene-card input:-webkit-autofill:focus {
+        box-shadow: 0 0 0 1000px var(--auth-card-bg) inset !important;
+        -webkit-text-fill-color: var(--foreground) !important;
+        caret-color: var(--foreground);
+    }
+
+    /* 验证码输入行：输入框与获取按钮同排，按钮贴右侧并用竖线分隔。
+       倒计时/禁用时按钮降到弱化态，避免和主提交按钮争夺注意力。 */
+    .auth-code-field {
+        display: flex;
+        align-items: stretch;
+        gap: 0;
+        border: var(--control-border-width) solid transparent;
+        border-radius: var(--radius, var(--r-sm));
+        background: color-mix(in srgb, var(--foreground) 5.5%, transparent);
+        transition:
+            border-color var(--motion-instant) ease-out,
+            background-color var(--motion-instant) ease-out,
+            box-shadow var(--motion-instant) ease-out;
+    }
+
+    .auth-code-field:hover {
+        border-color: var(--border);
+        background: color-mix(in srgb, var(--foreground) 7%, transparent);
+    }
+
+    /* 焦点环挂在整行容器上，内部输入框不再叠加第二层高亮。 */
+    .auth-code-field:focus-within {
+        border-color: var(--ring);
+        background: color-mix(in srgb, var(--foreground) 8.5%, transparent);
+        box-shadow: 0 0 0 var(--focus-ring-width) color-mix(in srgb, var(--ring) 18%, transparent);
+    }
+
+    .auth-code-field .ant-input,
+    .auth-code-field .ant-input-affix-wrapper {
+        border: 0 !important;
+        background: transparent !important;
         box-shadow: none !important;
     }
 
-    .auth-card-dark .ant-input-affix-wrapper-focused .ant-input-prefix svg {
-        color: rgba(255, 255, 255, 0.62) !important;
+    .auth-code-field .ant-input:focus,
+    .auth-code-field .ant-input-affix-wrapper-focused {
+        border-color: transparent !important;
+        box-shadow: none !important;
     }
 
-    .auth-card-dark input:-webkit-autofill,
-    .auth-card-dark input:-webkit-autofill:hover,
-    .auth-card-dark input:-webkit-autofill:focus {
-        box-shadow: 0 0 0 1000px #17181c inset !important;
-        -webkit-text-fill-color: #f5f5f5 !important;
-        caret-color: #f5f5f5;
+    .auth-code-send {
+        flex: 0 0 auto;
+        align-self: center;
+        height: auto;
+        min-height: 26px;
+        margin-inline-end: 5px;
+        padding-inline: var(--space-3);
+        border: 0;
+        border-inline-start: var(--control-border-width) solid color-mix(in srgb, var(--foreground) 12%, transparent);
+        border-radius: 0;
+        background: transparent;
+        box-shadow: none;
+        color: var(--auth-accent);
+        font-size: var(--fs-label);
+        font-weight: 500;
+        white-space: nowrap;
+    }
+
+    .auth-code-send:hover:not(:disabled) {
+        background: transparent;
+        color: var(--foreground);
+    }
+
+    /* 倒计时/发送中：保持排版稳定，只做颜色降级，不改变宽度导致输入框跳动。 */
+    .auth-code-send:disabled,
+    .auth-code-send[data-counting="true"] {
+        border-inline-start-color: color-mix(in srgb, var(--foreground) 10%, transparent);
+        background: transparent !important;
+        color: var(--auth-muted);
+        font-variant-numeric: tabular-nums;
+    }
+
+    .auth-code-field.is-busy .ant-input {
+        color: var(--auth-muted);
+    }
+
+    /* 协议勾选框：圆角方框 + 主题主色填充。
+       注意 AntD 6 把方框样式渲染在 .ant-checkbox 本身（对齐 antd/es/checkbox/style），
+       .ant-checkbox-inner 在内联样式阶段已被移除，因此所有规则必须打在外层元素上，
+       否则样式不会生效。
+       另外方框尺寸来自 checkboxSize = controlHeight / 2（本主题下为 18px），
+       由 cssinjs 生成，选择器权重不低于这里的规则，所以尺寸必须用 !important 收敛到 16px，
+       否则视觉上会是一个偏大的方块。对勾是 .ant-checkbox::after 的边框，
+       默认取 colorWhite，深色主题下 colorPrimary 也是近白，会退化成白底白勾，需单独覆盖。 */
+    .auth-agreement-row .ant-checkbox {
+        align-self: center;
+        width: 16px !important;
+        height: 16px !important;
+        border-color: color-mix(in srgb, var(--foreground) 32%, transparent) !important;
+        border-radius: var(--checkbox-radius, 4px);
+        background: color-mix(in srgb, var(--foreground) 3%, transparent) !important;
+        transition:
+            border-color var(--motion-instant) ease-out,
+            background-color var(--motion-instant) ease-out;
+    }
+
+    .auth-agreement-row .ant-checkbox::after {
+        border-color: var(--auth-check-fg) !important;
+        border-width: 2px !important;
+    }
+
+    .auth-agreement-row .ant-checkbox-wrapper:hover .ant-checkbox:not(.ant-checkbox-checked),
+    .auth-agreement-row .ant-checkbox:hover:not(.ant-checkbox-checked) {
+        border-color: color-mix(in srgb, var(--foreground) 55%, transparent) !important;
+        background: color-mix(in srgb, var(--foreground) 6%, transparent) !important;
+    }
+
+    .auth-agreement-row .ant-checkbox-checked,
+    .auth-agreement-row .ant-checkbox-wrapper:hover .ant-checkbox-checked,
+    .auth-agreement-row .ant-checkbox-checked:hover {
+        border-color: var(--auth-check-bg) !important;
+        background: var(--auth-check-bg) !important;
+    }
+
+    .auth-agreement-row .ant-checkbox:has(.ant-checkbox-input:focus-visible) {
+        outline: none;
+        box-shadow: 0 0 0 var(--focus-ring-width) color-mix(in srgb, var(--ring) 20%, transparent);
     }
 
 :where(.ant-modal, .ant-drawer, .ant-select-dropdown, .ant-dropdown, .ant-popover) {
@@ -14049,9 +14417,10 @@ html:not(.dark) .creation-history-drawer-root {
 .assets-cover-media { width: 100%; height: 100%; object-fit: contain; background: color-mix(in srgb, var(--foreground) 5%, transparent); }
 .assets-cover-fallback { display: grid; width: 100%; height: 100%; place-items: center; background: color-mix(in srgb, var(--foreground) 4%, transparent); color: color-mix(in srgb, var(--foreground) 42%, transparent); }
 .assets-cover-vignette { display: none; }
-.assets-cover-badges { position: absolute; top: 8px; left: 8px; z-index: 2; display: flex; align-items: center; gap: 5px; pointer-events: none; }
+.assets-cover-badges { position: absolute; top: 8px; left: 38px; right: 44px; z-index: 2; display: flex; align-items: center; gap: 5px; overflow: hidden; white-space: nowrap; pointer-events: none; }
 .assets-cover-badge {
     display: inline-flex;
+    flex-shrink: 0;
     height: 20px;
     align-items: center;
     gap: 4px;
@@ -14088,11 +14457,11 @@ html:not(.dark) .creation-history-drawer-root {
 .assets-cover-play svg { position: relative; width: 17px; height: 17px; margin-left: 2px; filter: drop-shadow(0 1px 4px rgba(0, 0, 0, .45)); }
 .assets-cover-link:hover .assets-cover-play, .assets-cover-link:focus-visible .assets-cover-play { opacity: 1; }
 
-/* 选中态：accent 勾选框（右下）+ accent 描边由 is-selected 提供 */
+/* 选择入口固定在左上角，徽章预留其空间；选中描边由 is-selected 提供。 */
 .assets-select-check {
     position: absolute;
-    right: 8px;
-    bottom: 8px;
+    left: 8px;
+    top: 8px;
     z-index: 3;
     width: 22px;
     height: 22px;
@@ -14167,17 +14536,19 @@ html:not(.dark) .creation-history-drawer-root {
 .assets-cover-model > svg { width: 34px; height: 34px; stroke-width: 1.1; }
 .assets-cover-model > span { max-width: 76%; overflow: hidden; font-size: var(--fs-micro); text-overflow: ellipsis; white-space: nowrap; }
 
-/* 批量操作条：浮现动画，黑白表面 */
+/* 批量操作条随列表正常排版，留出选中描边和 hover 位移的空间。 */
 .assets-batch-bar {
     display: flex;
     align-items: center;
     gap: 10px;
     flex-wrap: wrap;
-    margin: 2px 0 0;
+    margin: 2px 0 var(--space-4);
     padding: 8px 12px;
     border: 1px solid color-mix(in srgb, var(--foreground) 9%, transparent);
     border-radius: var(--r-lg);
-    background: color-mix(in srgb, var(--foreground) 3%, transparent);
+    background: color-mix(in srgb, var(--surface-card) 82%, transparent);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
     box-shadow: var(--elevation-hairline);
     animation: assets-batch-in 240ms var(--motion-ease-out) both;
 }
@@ -14185,7 +14556,7 @@ html:not(.dark) .creation-history-drawer-root {
 @media (prefers-reduced-motion: reduce) { .assets-batch-bar { animation: none; } }
 .assets-batch-count { display: inline-flex; align-items: baseline; gap: 6px; margin-right: auto; color: color-mix(in srgb, var(--foreground) 56%, transparent); font-size: var(--fs-label); }
 .assets-batch-count strong { color: var(--foreground); font-size: var(--fs-body); font-weight: 620; font-variant-numeric: tabular-nums; }
-.assets-batch-actions { display: inline-flex; align-items: center; gap: 4px; }
+.assets-batch-actions { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 4px; }
 .assets-batch-actions .ant-btn { border: 0; border-radius: var(--r-md); background: transparent; color: color-mix(in srgb, var(--foreground) 56%, transparent); box-shadow: none; }
 .assets-batch-actions .ant-btn:hover { background: color-mix(in srgb, var(--foreground) 7%, transparent); color: var(--foreground); }
 
@@ -14283,16 +14654,6 @@ html:not(.dark) .creation-history-drawer-root {
 
 /* 1. 欢迎卡与 banner 同列宽，边缘对齐 */
 .assets-empty-cards { width: min(720px, calc(100% - 24px)); }
-
-/* 2. 批量操作条：sticky + 毛玻璃，滚动长列表时始终可见 */
-.assets-batch-bar {
-    position: sticky;
-    top: 12px;
-    z-index: 20;
-    background: color-mix(in srgb, var(--surface-card) 82%, transparent);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
-}
 
 /* 素材密度由页面传入卡片最小宽度，网格布局统一在 workspace-product.css。 */
 .assets-library-page .library-create-title { margin-top: 12px; font-size: var(--fs-body); }
@@ -15102,12 +15463,12 @@ html:not(.dark) .creation-home .creation-user-message-copy-wrap { box-shadow: 0 
 
 /* ===== 2026-09 user workspace alignment =====
    这一组规则只作用于真实用户端壳层和首页，后台与画布编辑器保持原有职责和交互。
-   几何基准：侧栏 216px、顶部 64px、导航行 44px、首页内容最大宽度 1180px。 */
+   几何基准：侧栏 200px、顶部 56px、导航行 40px、首页内容最大宽度 1180px。 */
 .app-user-workspace {
-    --workspace-reference-sidebar: 216px;
-    --workspace-reference-collapsed: 70px;
-    --workspace-reference-topbar: 64px;
-    --workspace-reference-row: 44px;
+    --workspace-reference-sidebar: 200px;
+    --workspace-reference-collapsed: 64px;
+    --workspace-reference-topbar: 56px;
+    --workspace-reference-row: 40px;
     --workspace-reference-page-bg: #ffffff;
     background: var(--workspace-reference-page-bg);
 }
@@ -17766,8 +18127,8 @@ html:not(.dark) .creation-home .creation-user-message-copy-wrap { box-shadow: 0 
 .app-user-workspace .app-workspace-sidebar-scroll-area { padding: 22px 12px 12px !important; gap: 24px !important; }
 .app-user-workspace .app-workspace-sidebar-footer { padding: 12px 12px 14px !important; border-top: 0 !important; }
 .app-user-workspace .app-workspace-nav-link {
-    min-height: 44px !important;
-    padding: 4px 10px !important;
+    min-height: var(--workspace-reference-row) !important;
+    padding: 3px 10px !important;
     border-radius: 13px !important;
     color: var(--user-ink-muted) !important;
     font-size: 13px !important;
@@ -17782,13 +18143,13 @@ html:not(.dark) .creation-home .creation-user-message-copy-wrap { box-shadow: 0 
 .app-user-workspace .app-workspace-nav-link:focus-visible:not(.is-active) { background: var(--user-surface-hover) !important; color: var(--user-ink) !important; }
 .app-user-workspace .app-workspace-nav-group-toggle { color: var(--user-ink-soft) !important; }
 .app-user-workspace .app-workspace-sidebar.is-collapsed .app-workspace-sidebar-scroll-area { padding-inline: 8px !important; }
-.app-user-workspace .app-workspace-sidebar.is-collapsed .app-workspace-nav-link { width: 54px !important; }
+.app-user-workspace .app-workspace-sidebar.is-collapsed .app-workspace-nav-link { width: 48px !important; }
 
 .app-user-workspace .app-workspace-topbar {
-    min-height: 64px !important;
-    height: 64px !important;
+    min-height: var(--workspace-reference-topbar) !important;
+    height: var(--workspace-reference-topbar) !important;
     overflow: visible;
-    padding-inline: 24px !important;
+    padding-inline: 20px !important;
     border-bottom: 0 !important;
     background: color-mix(in srgb, var(--user-page-bg) 92%, transparent) !important;
     color: var(--user-ink) !important;

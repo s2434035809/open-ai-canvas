@@ -58,12 +58,18 @@ type DockMetrics = {
     distance: number;
 };
 
-// magnification 收敛：base 略增以适配圆角方块，magnified 幅度从 +14 降到 +8，
-// 避免 dock 整体跳动，同时保留 Aceternity 接近放大身份。
+// 桌面 dock 收紧常态与悬浮尺寸；触屏尺寸单独保留以保证点击目标。
 const DOCK_METRICS: Record<NonNullable<FloatingDockProps["size"]>, DockMetrics> = {
-    default: { base: 30, magnified: 38, icon: 15, iconMagnified: 18, distance: 100 },
+    default: { base: 28, magnified: 34, icon: 14, iconMagnified: 16, distance: 100 },
     compact: { base: 26, magnified: 32, icon: 13, iconMagnified: 16, distance: 84 },
 };
+
+// `window` 存在不代表 `matchMedia` 存在：测试与 renderToString 下它可能是 undefined，
+// 渲染期直接取用会抛 TypeError。指针能力是纯增强，取不到就按"非触屏"处理。
+function coarsePointerQuery(): MediaQueryList | undefined {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return undefined;
+    return window.matchMedia("(pointer: coarse)");
+}
 
 const TOUCH_DOCK_METRICS: Record<NonNullable<FloatingDockProps["size"]>, DockMetrics> = {
     default: { base: 40, magnified: 40, icon: 18, iconMagnified: 18, distance: 0 },
@@ -73,12 +79,13 @@ const TOUCH_DOCK_METRICS: Record<NonNullable<FloatingDockProps["size"]>, DockMet
 export const FloatingDock = forwardRef<HTMLDivElement, FloatingDockProps>(function FloatingDock({ items, size = "default", embedded = false, className, style, ariaLabel = "画布工具", showLabels = false }, forwardedRef) {
     const mouseX = useMotionValue(Number.POSITIVE_INFINITY);
     const reducedMotion = useReducedMotion();
-    const [coarsePointer, setCoarsePointer] = useState(() => typeof window !== "undefined" && window.matchMedia("(pointer: coarse)").matches);
+    const [coarsePointer, setCoarsePointer] = useState(() => coarsePointerQuery()?.matches ?? false);
     // 窄屏下 dock 按钮总宽易超出可用宽度：此时允许横向滚动并禁用放大（放大依赖 overflow-visible，与滚动互斥）
     const [narrow, setNarrow] = useState(() => (typeof window !== "undefined" ? window.innerWidth < 768 : false));
 
     useEffect(() => {
-        const media = window.matchMedia("(pointer: coarse)");
+        const media = coarsePointerQuery();
+        if (!media) return;
         const update = () => setCoarsePointer(media.matches);
         update();
         media.addEventListener("change", update);
@@ -128,7 +135,7 @@ export const FloatingDock = forwardRef<HTMLDivElement, FloatingDockProps>(functi
                             : "h-9 gap-0.5 px-0.5 pb-0.5"
                         : size === "compact"
                           ? "h-8 gap-0.5 rounded-[var(--r-lg)] px-1 pb-1"
-                          : "h-10 gap-0.5 rounded-[var(--dock-radius)] px-1.5 pb-1",
+                          : "h-9 gap-0.5 rounded-[var(--dock-radius)] px-1.5 pb-0.5",
                 className,
             )}
             style={style}

@@ -11,6 +11,16 @@ import (
 	"gorm.io/gorm"
 )
 
+func TestCurrentSchemaVersionMatchesMigrationPlan(t *testing.T) {
+	if len(schemaMigrations) == 0 {
+		t.Fatal("migration plan is empty")
+	}
+	latest := schemaMigrations[len(schemaMigrations)-1].version
+	if CurrentSchemaVersion != latest {
+		t.Fatalf("supported schema version %d does not match latest migration %d", CurrentSchemaVersion, latest)
+	}
+}
+
 func TestMigrateSchemaRecordsAndValidatesVersion(t *testing.T) {
 	db, err := Open(Config{Driver: "sqlite", DSN: "file:migration-version?mode=memory&cache=shared"})
 	if err != nil {
@@ -56,8 +66,64 @@ func TestMigrateSchemaRecordsAndValidatesVersion(t *testing.T) {
 	if !db.Migrator().HasColumn(&model.BannerAnnouncement{}, "notice_type") {
 		t.Fatal("schema migration v22 did not create banner announcements notice_type")
 	}
+	if !db.Migrator().HasTable(&model.AuthVerification{}) ||
+		!db.Migrator().HasTable(&model.NotificationQuota{}) ||
+		!db.Migrator().HasTable(&model.SMSChannel{}) ||
+		!db.Migrator().HasTable(&model.SMSRecord{}) {
+		t.Fatal("schema migration v35 did not create auth notification tables")
+	}
+	if !db.Migrator().HasColumn(&model.User{}, "phone") ||
+		!db.Migrator().HasColumn(&model.User{}, "email_verified_at") ||
+		!db.Migrator().HasColumn(&model.User{}, "phone_verified_at") ||
+		!db.Migrator().HasColumn(&model.EmailVerificationCode{}, "attempts") {
+		t.Fatal("schema migration v35 did not add authentication verification fields")
+	}
 	if err := MigrateSchema(db); err != nil {
 		t.Fatalf("migration should be idempotent: %v", err)
+	}
+}
+
+func TestMigrateSchemaV35UpgradesExistingDatabase(t *testing.T) {
+	db, err := Open(Config{Driver: "sqlite", DSN: "file:migration-auth-notifications-v35?mode=memory&cache=shared"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := MigrateSchema(db); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, table := range []any{&model.AuthVerification{}, &model.NotificationQuota{}, &model.SMSChannel{}, &model.SMSRecord{}} {
+		if err := db.Migrator().DropTable(table); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, column := range []string{"phone", "email_verified_at", "phone_verified_at"} {
+		if err := db.Migrator().DropColumn(&model.User{}, column); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Migrator().DropColumn(&model.EmailVerificationCode{}, "attempts"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Where("version = ?", 35).Delete(&schemaMigration{}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := MigrateSchema(db); err != nil {
+		t.Fatalf("upgrade from v34: %v", err)
+	}
+	for _, table := range []any{&model.AuthVerification{}, &model.NotificationQuota{}, &model.SMSChannel{}, &model.SMSRecord{}} {
+		if !db.Migrator().HasTable(table) {
+			t.Fatalf("migration v35 did not restore table %T", table)
+		}
+	}
+	for _, column := range []string{"phone", "email_verified_at", "phone_verified_at"} {
+		if !db.Migrator().HasColumn(&model.User{}, column) {
+			t.Fatalf("migration v35 did not restore users.%s", column)
+		}
+	}
+	if !db.Migrator().HasColumn(&model.EmailVerificationCode{}, "attempts") {
+		t.Fatal("migration v35 did not restore email verification attempts")
 	}
 }
 
@@ -446,7 +512,7 @@ func TestMigrateSchemaV4AddsResourceUploadKeyToExistingSchema(t *testing.T) {
 	if err := db.Exec(`CREATE TABLE resources (id TEXT PRIMARY KEY, user_id TEXT NOT NULL)`).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&model.ModelChannel{}, &model.ChannelModel{}, &model.ChannelModelPriceTier{}, &model.BillingOrder{}); err != nil {
+	if err := db.AutoMigrate(&model.ModelChannel{}, &model.ChannelModel{}, &model.ChannelModelPriceTier{}, &model.BillingOrder{}, &model.OAuthState{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.AutoMigrate(&schemaMigration{}); err != nil {
@@ -490,7 +556,7 @@ func TestMigrateSchemaRepairsLegacyAssetFoldersMigrationOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&model.Resource{}, &model.Asset{}, &model.AssetFolder{}, &model.ModelChannel{}, &model.ChannelModel{}, &model.ChannelModelPriceTier{}, &model.BillingOrder{}); err != nil {
+	if err := db.AutoMigrate(&model.Resource{}, &model.Asset{}, &model.AssetFolder{}, &model.ModelChannel{}, &model.ChannelModel{}, &model.ChannelModelPriceTier{}, &model.BillingOrder{}, &model.OAuthState{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.AutoMigrate(&schemaMigration{}); err != nil {

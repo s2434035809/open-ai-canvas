@@ -7,6 +7,7 @@ import type { ArtCritiqueNodeState } from "@/lib/art-critique/contracts";
 import type { CameraControlOptions } from "@/lib/canvas/camera-prompt-library";
 import type { SrtEntry, SubtitleHighlight, SubtitleStyle } from "@/types/timeline";
 import type { GenerationSpec } from "@/lib/canvas/generation-contract.generated";
+import type { GenerationTask } from "@/services/api/task-center";
 
 export type Position = {
     x: number;
@@ -271,7 +272,12 @@ export type CanvasNodeMetadata = {
     fontSize?: number;
     generationMode?: CanvasGenerationMode;
     generationType?: CanvasImageGenerationType;
+    /** 选用模型：下一次生成将使用的模型，随提示词面板下拉变化。 */
     model?: string;
+    /** 产出模型：当前图片、视频或音频内容生成成功时冻结的模型身份。 */
+    producedModel?: string;
+    /** 本次生成已提交、尚未成功落盘的模型身份。失败或改下拉都不改产出模型。 */
+    producedModelCandidate?: string;
     workflowProvider?: "model" | "runninghub";
     runningHubWorkflowId?: string;
     runningHubWorkflowKind?: "workflow" | "app";
@@ -360,6 +366,8 @@ export type CanvasNodeMetadata = {
     taskStatus?: "queued" | "running" | "succeeded" | "failed" | "cancelled" | string;
     taskProgress?: number;
     taskStage?: string;
+    taskMediaStage?: GenerationTask["mediaStage"];
+    taskCanRecoverMedia?: boolean;
     taskProvider?: string;
     taskStartedAt?: string;
     taskCompletedAt?: string;

@@ -124,6 +124,7 @@ type PublicChannelModelPrice struct {
 	Model                        string                     `json:"model"`
 	DisplayName                  string                     `json:"displayName"`
 	ChannelLabel                 string                     `json:"channelLabel"`
+	Tags                         []model.ChannelModelTag    `json:"tags"`
 	Description                  string                     `json:"description"`
 	Icon                         string                     `json:"icon"`
 	Capability                   string                     `json:"capability"`
@@ -187,6 +188,18 @@ func (s *Service) AdminReferences(actor *model.User) (*AdminReferenceData, error
 	if err != nil {
 		return nil, err
 	}
+	channelIDs := make([]string, 0, len(channels))
+	for _, channel := range channels {
+		channelIDs = append(channelIDs, channel.ID)
+	}
+	channelModels, err := s.repo.ChannelModelReferences(channelIDs)
+	if err != nil {
+		return nil, err
+	}
+	modelsByChannel := make(map[string][]model.ChannelModel, len(channels))
+	for _, item := range channelModels {
+		modelsByChannel[item.ChannelID] = append(modelsByChannel[item.ChannelID], item)
+	}
 	result := &AdminReferenceData{
 		Users:    make([]AdminUserReference, 0, len(users)),
 		Channels: make([]AdminChannelReference, 0, len(channels)),
@@ -195,10 +208,7 @@ func (s *Service) AdminReferences(actor *model.User) (*AdminReferenceData, error
 		result.Users = append(result.Users, AdminUserReference{ID: user.ID, Username: user.Username, DisplayName: user.DisplayName})
 	}
 	for _, channel := range channels {
-		items, itemErr := s.repo.ChannelModels(channel.ID, true)
-		if itemErr != nil {
-			return nil, itemErr
-		}
+		items := modelsByChannel[channel.ID]
 		models := make([]string, 0, len(items))
 		displayNames := make([]string, 0, len(items))
 		for _, item := range items {
@@ -749,7 +759,7 @@ func (s *Service) LogAPICall(log model.ApiCallLog) error {
 			stdlog.Printf("provider billing request id update failed: billing_order_id=%s provider_request_id=%s error=%v", log.BillingOrderID, log.ProviderRequestID, err)
 		}
 	}
-	if log.TaskID != "" {
+	if log.TaskID != "" && (log.RequestKind == "create" || log.RequestKind == "poll" || log.RequestKind == "cancel") {
 		stage := log.RequestKind
 		var nextPollAt *time.Time
 		if stage == "create" && log.Status == model.ApiCallStatusSucceeded && log.ProviderRequestID != "" {
@@ -797,7 +807,9 @@ func (s *Service) LogAPICall(log model.ApiCallLog) error {
 }
 
 func (s *Service) mergeVideoAPICallLog(log model.ApiCallLog) (bool, error) {
-	if log.Capability != "video" || (log.RequestKind != "poll" && log.RequestKind != "download") {
+	// Delivery is a separate outcome: a failed download must not rewrite a
+	// successful generation request as failed.
+	if log.Capability != "video" || log.RequestKind != "poll" {
 		return false, nil
 	}
 	if log.TaskID == "" && log.ProviderRequestID == "" {
@@ -947,7 +959,7 @@ func publicChannel(channel model.ModelChannel, admin bool, channelModels []model
 					capabilityConfig = normalized
 				}
 			}
-			modelCosts = append(modelCosts, PublicChannelModelPrice{Model: item.ModelKey, DisplayName: item.DisplayName, ChannelLabel: item.ChannelLabel, Description: item.Description, Icon: item.Icon, Capability: item.Capability, Protocol: item.Protocol, BillingMode: item.BillingMode, UnitPriceMicrocredits: item.UnitPriceMicrocredits, InputTokenPriceMicrocredits: item.InputTokenPriceMicrocredits, OutputTokenPriceMicrocredits: item.OutputTokenPriceMicrocredits, CachedTokenPriceMicrocredits: item.CachedTokenPriceMicrocredits, CapabilityConfig: capabilityConfig})
+			modelCosts = append(modelCosts, PublicChannelModelPrice{Model: item.ModelKey, DisplayName: item.DisplayName, ChannelLabel: item.ChannelLabel, Tags: item.Tags, Description: item.Description, Icon: item.Icon, Capability: item.Capability, Protocol: item.Protocol, BillingMode: item.BillingMode, UnitPriceMicrocredits: item.UnitPriceMicrocredits, InputTokenPriceMicrocredits: item.InputTokenPriceMicrocredits, OutputTokenPriceMicrocredits: item.OutputTokenPriceMicrocredits, CachedTokenPriceMicrocredits: item.CachedTokenPriceMicrocredits, CapabilityConfig: capabilityConfig})
 		}
 	}
 	if len(models) == 0 {
