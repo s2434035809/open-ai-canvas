@@ -159,6 +159,11 @@ func normalizePortfolioRequest(req SavePortfolioDocumentRequest) (normalizedPort
 	if !json.Valid([]byte(doc)) {
 		return normalizedPortfolioRequest{}, BadAuthRequest("作品集内容不是合法 JSON")
 	}
+	// 契约里文档是对象（schemaVersion/pages/...）。json.Valid 对字符串、数组、
+	// 数字同样返回 true，若放行会让前端读到无法渲染的正文，这里显式收口。
+	if !strings.HasPrefix(doc, "{") {
+		return normalizedPortfolioRequest{}, BadAuthRequest("作品集内容必须是 JSON 对象")
+	}
 	pageCount := req.PageCount
 	if pageCount < 0 {
 		pageCount = 0
