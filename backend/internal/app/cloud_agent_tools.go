@@ -536,7 +536,7 @@ func compileCloudAgentTools(req CloudAgentRequest, includeProfileTool bool) []ma
 			"topic", "category", "situation")
 	}
 	if req.PermissionMode != "read_only" && len(req.ContextScope) > 0 {
-		add("image_layer_split", "将图片按用户指定对象拆分为独立透明图层。参数与 generate_media 的图片生成参数一致，但 mode 固定为 image；request_approval 进入界面独立审批，auto 由服务端准入成功后直接提交，不会再次弹出模型生成审批。", map[string]any{
+		add("image_layer_split", "将图片按用户指定对象拆分为独立透明图层。参数与 generate_media 的图片生成参数一致，但 mode 固定为 image；所有权限模式都会先创建草稿并进入界面独立审批，用户批准后才提交生成任务。", map[string]any{
 			"prompt": str("需要拆分的对象与透明背景要求"), "logicalModelId": str("selection.logicalModelId"), "channelId": str("selection.channelId"), "channelModelKey": str("selection.channelModelKey"),
 			"quality": str("模型支持的质量档位"), "snapshotHash": str("最近画布读取返回的 mediaSnapshotHash，可省略"), "nodeId": str("新的结果节点ID"), "title": str("结果节点名称"), "referenceNodeIds": map[string]any{"type": "array", "maxItems": 16, "items": str("源图片节点ID")},
 		}, "prompt", "nodeId", "title", "referenceNodeIds")
@@ -553,14 +553,14 @@ func compileCloudAgentTools(req CloudAgentRequest, includeProfileTool bool) []ma
 			"y":            map[string]any{"type": "number"},
 		}, "snapshotHash", "nodeId", "title", "rows")
 		add("canvas_edit_storyboard", "追加、修改或删除分镜脚本中的单个镜头行。必须先用 canvas_read_storyboard 读取最新 snapshotHash 和真实 rowId；append 不传 rowId，update/remove 必须传。patch 只允许镜头文本与时长，不能修改素材绑定、媒体节点ID、任务状态、资源URL或任意 metadata。", map[string]any{
-			"snapshotHash": str("最近一次分镜读取返回的 snapshotHash"),
+			"snapshotHash": str("最近一次 canvas_read_storyboard 返回的 snapshotHash（这个分镜节点的版本；其它节点的改动不影响它）"),
 			"nodeId":       str("真实分镜脚本节点ID"),
 			"action":       map[string]any{"type": "string", "enum": []string{"append", "update", "remove"}},
 			"rowId":        str("update/remove 使用 canvas_read_storyboard 返回的真实 rowId；append 留空"),
 			"patch":        cloudAgentStoryboardPatchSchema(),
 		}, "snapshotHash", "nodeId", "action")
 		add("canvas_edit_batch_table", "操作批量创作表组件：追加、修改或删除任务行，切换批量换装/创意生图，设置1/5/10并发，新增或减少参考图列，或设置覆盖各任务的全局提示词。必须先用 canvas_read_batch_table 获取最新 snapshotHash 和真实 rowId。行 patch 仅允许 enabled、inputNodeIds、prompt；prompt 可使用读取结果中的 @参考图1、@参考图2 等 mentionToken 指代本行对应位置的图片。append 未传 inputNodeIds 时会继承上一行参考图；图片ID必须来自当前画布。不能写 outputNodeId、任务状态、URL、storageKey 或任意 metadata。本工具只编辑计划，不提交收费生成。", map[string]any{
-			"snapshotHash": str("最近一次批量创作表读取返回的 snapshotHash"),
+			"snapshotHash": str("最近一次 canvas_read_batch_table 返回的 snapshotHash（这个表节点的版本；其它节点的改动不影响它）"),
 			"nodeId":       str("真实批量创作表节点ID"),
 			"action":       map[string]any{"type": "string", "enum": []string{"append", "update", "remove", "set_operation", "set_concurrency", "add_reference_column", "remove_reference_column", "set_global_prompt"}},
 			"rowId":        str("update/remove 使用 canvas_read_batch_table 返回的真实 rowId；其他操作留空"),
@@ -610,7 +610,7 @@ func compileCloudAgentTools(req CloudAgentRequest, includeProfileTool bool) []ma
 		}, "snapshotHash")
 	}
 	if req.PermissionMode != "read_only" && len(req.ContextScope) > 0 {
-		add("generate_media", "提交媒体生成：先准备草稿和引用；request_approval 需要用户确认，auto 在服务端完成模型、能力、价格、预算和资源校验后直接提交，不会再次弹出模型生成审批。auto 只在准入成功后提交。创建节点/改提示词/连线用 canvas_apply_ops。先读画布和模型目录并遵守其能力。已有任务或产物的节点不可覆盖；状态用 generation/task_get。sourceNodeId 为文本输入，referenceNodeIds 为媒体输入，referenceTransientIds 仅接受标注工具返回值，不接受URL。已提交失败要告知用户，重试须用户明确要求并重新审批。", map[string]any{
+		add("generate_media", "提交媒体生成：先准备草稿和引用；所有权限模式都会先经服务端完成模型、能力、价格、预算和资源校验，再进入界面独立审批，用户批准后才提交生成任务。创建节点/改提示词/连线用 canvas_apply_ops。先读画布和模型目录并遵守其能力。已有任务或产物的节点不可覆盖；状态用 generation/task_get。sourceNodeId 为文本输入，referenceNodeIds 为媒体输入，referenceTransientIds 仅接受标注工具返回值，不接受URL。已提交失败要告知用户，重试须用户明确要求并重新审批。", map[string]any{
 			"mode": map[string]any{"type": "string", "enum": cloudAgentGenerationModeNames()}, "prompt": str("完整生成提示词；引用素材时在对应描述中使用 @图片1、@视频1、@音频1，各类型按 referenceNodeIds 中出现顺序独立编号，文本来源不占媒体编号。服务端会为遗漏的已选素材补齐引用标签，不推断素材用途"),
 			"logicalModelId": str("selection.logicalModelId；与channelId/channelModelKey互斥"), "channelId": str("selection.channelId"), "channelModelKey": str("selection.channelModelKey"),
 			"durationSeconds": map[string]any{"type": "integer", "minimum": 0}, "size": str("模型支持的画幅，例如9:16"), "quality": str("目录支持的分辨率或质量"), "videoGenerateAudio": map[string]any{"type": "boolean", "description": "是否生成音频，仅视频可用"},
@@ -1011,7 +1011,7 @@ func cloudAgentReadTool(repo *repository.Repository, userID string, state *cloud
 		if err != nil {
 			return nil, err
 		}
-		return cloudAgentStoryboardReadResult(view, args.NodeID)
+		return cloudAgentStoryboardReadResult(view, args.NodeID, cloudAgentNodeHash(doc, args.NodeID))
 	case "canvas_read_batch_table":
 		var args struct {
 			NodeID string `json:"nodeId"`
@@ -1038,7 +1038,7 @@ func cloudAgentReadTool(repo *repository.Repository, userID string, state *cloud
 		if err != nil {
 			return nil, err
 		}
-		return cloudAgentBatchTableReadResult(view, args.NodeID)
+		return cloudAgentBatchTableReadResult(view, args.NodeID, cloudAgentNodeHash(doc, args.NodeID))
 	case "image_text_detect":
 		var args struct {
 			NodeID string `json:"nodeId"`
