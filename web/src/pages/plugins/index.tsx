@@ -11,6 +11,7 @@ import { listRegisteredPlugins } from "@/lib/plugins/plugin-registry";
 import "@/lib/plugins/builtin";
 import { EAGLE_PLUGIN_ID } from "@/lib/plugins/builtin/eagle";
 import { PROMPT_OPTIMIZER_PLUGIN_ID } from "@/lib/plugins/builtin/prompt-optimizer";
+import { PORTFOLIO_STUDIO_PLUGIN_ID } from "@/lib/plugins/builtin/portfolio/portfolio-studio";
 import { RUNNINGHUB_PLUGIN_ID } from "@/lib/plugins/builtin/workflows";
 import { isOfficialApplicationPluginId } from "@/lib/plugins/official-applications";
 import type { PluginManifest, PluginManifestV2, RegisteredPlugin } from "@/lib/plugins/plugin-types";
@@ -572,6 +573,21 @@ export default function PluginsPage() {
                                                 }}
                                             >
                                                 打开工作流设置
+                                            </Button>
+                                        </div>
+                                    ) : settingsPlugin.manifest.id === PORTFOLIO_STUDIO_PLUGIN_ID ? (
+                                        <div className="plugin-settings-empty">
+                                            <p>作品集工作台把导入的图片编排成可分享的作品集，并支持由 Agent 辅助分类与生成文案。</p>
+                                            <Button
+                                                type="primary"
+                                                icon={<ExternalLink className="size-4" />}
+                                                disabled={!settingsEnabled}
+                                                onClick={() => {
+                                                    setSettingsPluginId(null);
+                                                    navigate("/plugins/portfolio");
+                                                }}
+                                            >
+                                                打开作品集工作台
                                             </Button>
                                         </div>
                                     ) : (
