@@ -39,8 +39,11 @@ export default function PortfolioStudioPage() {
     const config = useEffectiveConfig();
     const installations = usePluginStore((state) => state.installations);
     const ensurePlugin = usePluginStore((state) => state.ensurePlugin);
+    const pluginStates = usePluginStore((state) => state.pluginStates);
     const installation = installations.find((item) => item.manifest.id === PORTFOLIO_STUDIO_PLUGIN_ID);
-    const enabled = Boolean(installation?.enabled);
+    // 后端启停状态优先（与全应用其它插件一致），本地安装状态兜底：否则后端已启用、
+    // 而本地 store 里首次记录是 enabled:false 时，工作台会被误判成「未启用」。
+    const enabled = pluginStates[PORTFOLIO_STUDIO_PLUGIN_ID]?.effectiveEnabled ?? Boolean(installation?.enabled);
 
     const portfolioDoc = usePortfolioStore((state) => state.document);
     const currentPage = usePortfolioStore(currentPortfolioPage);
