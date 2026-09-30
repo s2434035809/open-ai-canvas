@@ -287,6 +287,11 @@ func (s *Service) ensureCloudAgentExecution(task *model.Task, initial cloudAgent
 		}
 		state.event(task.ID, "tool_completed", map[string]any{"toolName": "skills_load", "skillIds": skillIDs, "text": fmt.Sprintf("已启用 %d 个技能，正文将按需读取", len(initial.Skills))})
 	}
+	if len(state.Plan) > 0 {
+		// 继承的待办清单必须挂到本轮：前端按 plan-<runId> 展示清单，不发这条事件时
+		// 界面会一直停在上一轮（已结束）的清单上，显示"未完成项已停止"。
+		state.event(task.ID, "plan_updated", map[string]any{"items": state.Plan, "pendingTitles": cloudAgentPendingPlanItems(state.Plan), "inherited": true})
+	}
 	pressure := s.cloudAgentContextPressure(input.Requests.Canonical, initial.Request.Prompt, initial.Request)
 	if carrier {
 		// The carrier is deliberately not a model call. Pi will create the first
@@ -2449,7 +2454,7 @@ func (s *Service) DecideCloudAgentApproval(userID, id, approvalID, decision, rea
 		if previous == decision && (settings == nil || state.DecisionSettings[approvalID] == creationHash(settings)) {
 			return nil
 		}
-		return creationConflict("该审批已有不同决定")
+		return cloudAgentDecisionConflict(previous)
 	}
 	if run.Status != "waiting_approval" || state.Approval == nil || state.Approval.ID != approvalID {
 		return creationConflict("审批不存在或已过期")
@@ -2472,7 +2477,7 @@ func (s *Service) DecideCloudAgentApproval(userID, id, approvalID, decision, rea
 				if previous == decision && (settings == nil || state.DecisionSettings[approvalID] == creationHash(settings)) {
 					return nil
 				}
-				return creationConflict("该审批已有不同决定")
+				return cloudAgentDecisionConflict(previous)
 			}
 			if run.Status != "waiting_approval" || state.Approval == nil || state.Approval.ID != approvalID {
 				return creationConflict("审批不存在或已过期")
