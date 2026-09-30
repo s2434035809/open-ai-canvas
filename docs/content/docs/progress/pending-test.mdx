@@ -2815,8 +2815,13 @@ SSE 现在按 revision 变化发送紧凑快照，无变化只 heartbeat；客�
 - [x] 后端：`gofmt` / `go vet` 干净，`TestPortfolioAgent*`（6 项）与工具表守卫通过，`Portfolio|CloudAgent` 相关回归通过。
 - [x] 前端：`tsc --noEmit`、`eslint src test`、改动文件的 `prettier --check` 通过；新增 `web/test/portfolio-agent-run.test.ts`（8 项）覆盖壳画布 ID 派生、受管模型解析、提示词要素与建议解析。
 - [x] 接口级验证（开发栈 18080）：带真实登录态向 `POST /agent/runs` 提交 `canvasId=pf-<真实文档ID>`、`contextScope=[]` 的运行请求，确认壳画布按需创建成功（`canvas_projects` 出现 `pf-5ac1b720…`，标题「作品集：我的第一本作品集」），且缺少有效渠道模型时在准入阶段被拒（400「指定的渠道不存在」）。验证用的临时会话行已删除。
-- [ ] **阻塞项**：开发栈数据库 `model_channels = 0`，内置 Agent 必须使用后端受管的文本模型，因此本轮无法完成真实模型端到端。
-- [ ] 补通道的准确位置：开发实例 `http://127.0.0.1:13000`（`akai77` / `akai77-dev-2026`）→ 管理后台 → 渠道（直达 `/admin/channels`）→ 新增渠道 → 在其下新增一个**文本**模型 → 编辑该模型 →「能力与参数」标签 →「引用与限制」区 →「图片引用」卡片 → 把「最大参考图片数」设为大于 0（8~16 足够）。随后还要在应用的模型选择器里选中该模型：作品集用的是全局当前模型（`useEffectiveConfig()`），没有页面内单独选模型的入口。
-- [ ] 三点必须同时成立，否则会**静默**失效：`cloudAgentVisionReferences`（`cloud_agent_vision.go:94`）要求请求带 `channelId` + `channelModelKey`、渠道模型 `capability == text`、且 `text.references.maxImages > 0`。任一不满足只把 `VisionEnabled` 置为 false——看图工具不注册也不报错，表现为「能跑但配文空泛」。另外，管理员创建的渠道 `scope` 为 `system`，前端才会作为平台渠道给出 `channelId`；用户自建渠道（`scope=user`）不会被内置 Agent 接受，`logicalModelId` 形式也拿不到图片能力声明。
+- [x] **阻塞项（已解除，2026-09-30 复核）**：开发栈数据库 `model_channels` 原为 0；现已配置 20 个渠道 / 123 个模型，其中 `agnes` 渠道（`scope=system`、启用）下 `agnes-3.0-flash` 为文本模型且 `text.references.maxImages = 8`，看图（vision）三条件全部满足。
+- [x] 补通道的准确位置：开发实例 `http://127.0.0.1:13000`（`akai77` / `akai77-dev-2026`）→ 管理后台 → 渠道（直达 `/admin/channels`）→ 新增渠道 → 在其下新增一个**文本**模型 → 编辑该模型 →「能力与参数」标签 →「引用与限制」区 →「图片引用」卡片 → 把「最大参考图片数」设为大于 0（8~16 足够）。随后还要在应用的模型选择器里选中该模型：作品集用的是全局当前模型（`useEffectiveConfig()`），没有页面内单独选模型的入口。（已完成：`agnes` 渠道 + `agnes-3.0-flash`，maxImages=8；全局模型在应用模型选择器中选中。）
+- [x] 三点必须同时成立，否则会**静默**失效：`cloudAgentVisionReferences`（`cloud_agent_vision.go:94`）要求请求带 `channelId` + `channelModelKey`、渠道模型 `capability == text`、且 `text.references.maxImages > 0`。任一不满足只把 `VisionEnabled` 置为 false——看图工具不注册也不报错，表现为「能跑但配文空泛」。另外，管理员创建的渠道 `scope` 为 `system`，前端才会作为平台渠道给出 `channelId`；用户自建渠道（`scope=user`）不会被内置 Agent 接受，`logicalModelId` 形式也拿不到图片能力声明。（2026-09-30 实测：三条件满足，看图工具注册并逐张执行，配文与真实画面一致，未发生静默失效。）
 - [ ] 部署栈（3003，官方镜像 1.5.7）现有 10 个文本模型的 `maxImages` 全为 0，所以这一项无论走哪条路都要手工设置；但 3003 跑的是官方镜像、看不到本地改动，验收必须在 13000 做。
-- [ ] 配好模型后登录真实页面验收：导入图片 → Agent 分类配文 → 确认弹窗勾选 → 写入文档 → 撤销 → 导出 HTML/PNG 的一致性；同时确认壳画布不出现在画布列表与列表计数里。
+- [x] 配好模型后登录真实页面验收：导入图片 → Agent 分类配文 → 确认弹窗勾选 → 写入文档 → 撤销 → 导出 HTML/PNG 的一致性；同时确认壳画布不出现在画布列表与列表计数里。（2026-09-30 于 13000 完成：Agent「读页 → 逐张看图 ×3 → 整理 3 条图注/标签建议」全部成功；3/3 勾选后写入文档并落库（顶栏显示「已保存」）；撤销/重做正常；导出自包含 HTML（9.3 MB，默认含图注）与当前页 PNG（4.8 MB）均下载成功；`/canvas` 列表仅「自由画布 1」，无 `pf-*` 壳画布与「作品集：」标题条目。）
+
+## SQLite→PG 迁移清单补 portfolio_documents（2026-09-30）
+
+- 已修复：`cmd/migrate-sqlite-postgres` 的 `migrations()` 表清单遗漏作品集新表 `portfolio_documents`，导致 `TestMigrationListCoversSchemaModels` 失败；已在清单末尾补 `migrateTable[model.PortfolioDocument]("portfolio_documents")`，全量 `go test ./...` 通过（28 包 ok，dev 容器内执行）。
+- [ ] 改动位于 `feature/AI-Portfolio` 工作区、尚未提交，需用户确认提交；SQLite→PostgreSQL 迁移场景建议备份后跑一次 `migrate-sqlite-postgres` 冒烟验证（结构覆盖已由单测保证，非阻塞）。
