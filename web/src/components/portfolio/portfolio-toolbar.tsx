@@ -45,6 +45,8 @@ export type PortfolioToolbarProps = {
     classifying: boolean;
     /** 文档切换入口由页面注入，避免工具栏直接依赖文档列表的加载状态。 */
     documentSwitcher?: React.ReactNode;
+    /** 导出入口同样由页面注入：它需要当前文档、进度提示与落盘副作用。 */
+    exportMenu?: React.ReactNode;
 };
 
 const ALIGN_ACTIONS: Array<{ mode: PortfolioAlignMode; label: string; icon: React.ReactNode }> = [
@@ -56,7 +58,7 @@ const ALIGN_ACTIONS: Array<{ mode: PortfolioAlignMode; label: string; icon: Reac
     { mode: "bottom", label: "底对齐", icon: <AlignEndHorizontal className="size-4" /> },
 ];
 
-export function PortfolioToolbar({ onBack, onSave, onClassify, onFit, classifyDisabled, classifying, documentSwitcher }: PortfolioToolbarProps) {
+export function PortfolioToolbar({ onBack, onSave, onClassify, onFit, classifyDisabled, classifying, documentSwitcher, exportMenu }: PortfolioToolbarProps) {
     const { message } = App.useApp();
     const title = usePortfolioStore((state) => state.document?.title ?? "");
     const dirty = usePortfolioStore((state) => state.dirty);
@@ -179,6 +181,7 @@ export function PortfolioToolbar({ onBack, onSave, onClassify, onFit, classifyDi
                 <Button size="small" icon={classifying ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />} disabled={classifyDisabled || classifying} onClick={onClassify}>
                     Agent 分类配文
                 </Button>
+                {exportMenu}
             </div>
         </header>
     );

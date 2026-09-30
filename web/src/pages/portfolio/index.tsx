@@ -12,6 +12,7 @@ import { useNavigate } from "react-router";
 
 import "@/lib/plugins/builtin";
 import { PortfolioCanvas, type PortfolioCanvasHandle } from "@/components/portfolio/portfolio-canvas";
+import { PortfolioExportMenu } from "@/components/portfolio/portfolio-export-menu";
 import { PortfolioInspector } from "@/components/portfolio/portfolio-inspector";
 import { PortfolioSidebar } from "@/components/portfolio/portfolio-sidebar";
 import { PortfolioToolbar } from "@/components/portfolio/portfolio-toolbar";
@@ -19,6 +20,8 @@ import { EmptyState } from "@/components/ui/product/empty-state";
 import { createPortfolioAgent } from "@/lib/portfolio/agent";
 import { isPortfolioDocument, PORTFOLIO_MAX_DOC_BYTES, type PortfolioDocument, type PortfolioElementPatch } from "@/lib/portfolio/contracts";
 import { createPortfolioDocument as createBlankDocument } from "@/lib/portfolio/document";
+import { runPortfolioExport } from "@/lib/portfolio/export";
+import { PORTFOLIO_EXPORT_DEFAULT_SCALE, type PortfolioExportTarget } from "@/lib/portfolio/export/types";
 import { imageFilesFromDataTransfer, readLocalImage, uploadLocalImage } from "@/lib/portfolio/image-import";
 import { currentPortfolioPage, isPortfolioDocumentTooLarge, usePortfolioStore } from "@/lib/portfolio/store";
 import { PORTFOLIO_STUDIO_PLUGIN_ID, portfolioStudioPlugin } from "@/lib/plugins/builtin/portfolio/portfolio-studio";
@@ -46,6 +49,11 @@ export default function PortfolioStudioPage() {
 
     const [documents, setDocuments] = useState<PortfolioDocumentSummary[]>([]);
     const [classifying, setClassifying] = useState(false);
+    const [exporting, setExporting] = useState(false);
+    const [exportStage, setExportStage] = useState("");
+    const [exportScale, setExportScale] = useState<number>(PORTFOLIO_EXPORT_DEFAULT_SCALE);
+    /** null 表示跟随目标默认：PNG 不含图注与标签，HTML 含。 */
+    const [exportIncludeMeta, setExportIncludeMeta] = useState<boolean | null>(null);
     const [editingTextId, setEditingTextId] = useState<string | null>(null);
     const [textDraft, setTextDraft] = useState("");
     const [dragging, setDragging] = useState(false);
@@ -212,6 +220,44 @@ export default function PortfolioStudioPage() {
 
     const classifyDisabled = !currentPage || currentPage.elements.every((element) => element.kind !== "image");
 
+    // ---- 导出 ----
+    const runExport = useCallback(
+        async (target: PortfolioExportTarget) => {
+            const store = usePortfolioStore.getState();
+            const doc = store.document;
+            if (!doc) return;
+            if (isPortfolioDocumentTooLarge(doc)) {
+                void message.error(`文档已超过 ${Math.round(PORTFOLIO_MAX_DOC_BYTES / 1024 / 1024)}MB 上限，请先精简内嵌图片再导出`);
+                return;
+            }
+            setExporting(true);
+            setExportStage("正在准备导出");
+            try {
+                const outcome = await runPortfolioExport(
+                    {
+                        target,
+                        document: doc,
+                        page: currentPortfolioPage(store),
+                        options: {
+                            scale: exportScale,
+                            ...(exportIncludeMeta === null ? {} : { includeCaptions: exportIncludeMeta, includeTags: exportIncludeMeta }),
+                        },
+                    },
+                    { onProgress: (progress) => setExportStage(progress.label) },
+                );
+                // 个别图片读不到不影响交付，但要明确告诉用户少了几张，而不是让他在成品里自己找。
+                if (outcome.failures.length > 0) void message.warning(outcome.note);
+                else void message.success(outcome.note);
+            } catch (reason) {
+                void message.error(reason instanceof Error ? reason.message : "导出失败");
+            } finally {
+                setExporting(false);
+                setExportStage("");
+            }
+        },
+        [exportIncludeMeta, exportScale, message],
+    );
+
     // ---- 文字编辑 ----
     const editingElement = usePortfolioStore((state) => {
         if (!editingTextId) return null;
@@ -324,6 +370,17 @@ export default function PortfolioStudioPage() {
                 classifyDisabled={classifyDisabled}
                 classifying={classifying}
                 documentSwitcher={switcher}
+                exportMenu={
+                    <PortfolioExportMenu
+                        disabled={!portfolioDoc}
+                        busy={exporting}
+                        scale={exportScale}
+                        includeMeta={exportIncludeMeta}
+                        onScaleChange={setExportScale}
+                        onIncludeMetaChange={setExportIncludeMeta}
+                        onExport={(target) => void runExport(target)}
+                    />
+                }
             />
             {error ? <div className="border-b border-destructive/30 bg-destructive/10 px-3 py-1.5 text-[var(--fs-micro)] text-destructive">{error}</div> : null}
             {booting && !portfolioDoc ? (
@@ -362,10 +419,10 @@ export default function PortfolioStudioPage() {
                                 松开即可把图片加入当前页
                             </div>
                         ) : null}
-                        {classifying ? (
+                        {exporting || classifying ? (
                             <div className="pointer-events-none absolute bottom-3 left-1/2 z-10 -translate-x-1/2 rounded-full bg-background/95 px-3 py-1.5 text-[var(--fs-micro)] shadow-sm">
                                 <Loader2 className="mr-1.5 inline size-3.5 animate-spin" />
-                                Agent 正在分析当前页图片…
+                                {exporting ? exportStage || "正在导出…" : "Agent 正在分析当前页图片…"}
                             </div>
                         ) : null}
                     </div>
