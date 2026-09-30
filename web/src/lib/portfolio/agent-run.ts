@@ -58,10 +58,21 @@ export type PortfolioAgentProgress = {
 export type PortfolioAgentRunResult = {
     proposals: PortfolioAnnotationProposal[];
     summary: string;
+    /** 模型的思考过程（若模型输出）。面板里折叠展示，与画布 Agent 面板一致。 */
+    reasoning: string;
     status: AgentRun["status"];
     /** 失败/中断时的可读原因，成功时为空串。 */
     failureMessage: string;
 };
+
+/**
+ * 运行期过程事件，让面板"看得见过程"。
+ *
+ * 文本一律给**完整当前值**而不是增量：增量语义要在面板里再维护一份累加状态，
+ * 而合成快照（assistant_message / reasoning_message）给的本来就是整段，两套语义
+ * 混在一起容易错位。这里统一收口成"最新全文"，面板直接覆盖即可。
+ */
+export type PortfolioAgentEvent = { kind: "assistant"; text: string } | { kind: "reasoning"; text: string } | { kind: "tool"; toolName: string; label: string; ok: boolean } | { kind: "status"; status: AgentRun["status"] };
 
 export type PortfolioAgentModelSelection = {
     channelId?: string;
@@ -86,13 +97,17 @@ export function portfolioAgentModelSelection(config: AiConfig, model: string): P
     return logicalModelId ? { logicalModelId } : null;
 }
 
+/** 面板输入框的默认要求：用户可在此基础上任意改写。 */
+export const PORTFOLIO_AGENT_DEFAULT_INSTRUCTION = "为当前页的每张图片补充中文图注与分类标签。";
+
 /**
- * 提示词按"先读、逐张看、一次提案"三步写死，好让一次运行的成本可预测：
- * 元素 ID 直接列进提示词，模型不必先自己找一遍，也不会顺手处理别的页面。
+ * 提示词分两段拼：**用户要求**（可以自由改写）在前，**执行步骤**（元素 ID、工具顺序、
+ * 输出格式）在后。执行步骤是可靠性的来源——把它交给用户编辑，很容易漏掉某个工具或
+ * 让模型自己去猜页面结构，一次运行就白烧了。
  */
-export function buildPortfolioAgentPrompt(input: { pageId: string; pageName: string; images: readonly PortfolioAgentImage[] }): string {
+export function buildPortfolioAgentPrompt(input: { pageId: string; pageName: string; images: readonly PortfolioAgentImage[]; instruction?: string }): string {
     const lines = [
-        "请为作品集当前页的图片补充分类标签与图注。",
+        input.instruction?.trim() || PORTFOLIO_AGENT_DEFAULT_INSTRUCTION,
         "",
         "步骤：",
         `1. 调用 portfolio_read_document（pageId=${input.pageId}）读取本页元素，确认下面每张图都还在。`,
@@ -151,7 +166,11 @@ export type PortfolioAgentRunOptions = {
     images: readonly PortfolioAgentImage[];
     config: AiConfig;
     model: string;
+    /** 自定义提示词；留空时用当前页的默认「补图注与标签」指令。 */
+    prompt?: string;
     onProgress?: (progress: PortfolioAgentProgress) => void;
+    /** 运行期过程事件：思考 / 正文 / 工具步骤 / 状态。 */
+    onEvent?: (event: PortfolioAgentEvent) => void;
     signal?: AbortSignal;
 };
 
@@ -168,7 +187,7 @@ export async function runPortfolioAnnotationAgent(options: PortfolioAgentRunOpti
     }
     const request: CreateAgentRunInput = {
         canvasId: portfolioShellCanvasId(options.documentId),
-        prompt: buildPortfolioAgentPrompt({ pageId: options.pageId, pageName: options.pageName, images: options.images }),
+        prompt: buildPortfolioAgentPrompt({ pageId: options.pageId, pageName: options.pageName, images: options.images, instruction: options.prompt }),
         reasoningMode: "off",
         // 作品集不是画布：不声明画布上下文，运行里就不会注册画布工具。
         contextScope: [],
@@ -182,10 +201,17 @@ export async function runPortfolioAnnotationAgent(options: PortfolioAgentRunOpti
     const runId = created.run.id;
     const proposals: PortfolioAnnotationProposal[] = [];
     let summary = "";
+    let reasoning = "";
     let failureMessage = "";
     let status: AgentRun["status"] = created.run.status;
 
     const report = (stage?: string) => options.onProgress?.({ stage: stage ?? "", summary });
+    // 只在文本真的变长时才外发：流式增量与整段快照会交替到达，短的那次不能覆盖长的。
+    const emitText = (current: string, next: string, kind: "assistant" | "reasoning") => {
+        if (next.length <= current.length) return current;
+        options.onEvent?.({ kind, text: next });
+        return next;
+    };
 
     await new Promise<void>((resolve) => {
         let settled = false;
@@ -214,7 +240,7 @@ export async function runPortfolioAnnotationAgent(options: PortfolioAgentRunOpti
                     case "assistant_delta": {
                         const text = typeof event.payload?.text === "string" ? event.payload.text : "";
                         if (text) {
-                            summary += text;
+                            summary = emitText(summary, summary + text, "assistant");
                             report();
                         }
                         break;
@@ -222,10 +248,17 @@ export async function runPortfolioAnnotationAgent(options: PortfolioAgentRunOpti
                     case "assistant_message": {
                         const text = typeof event.payload?.text === "string" ? event.payload.text : "";
                         // 合成快照给的是整段正文，比逐片累加更权威；但流式可能已经更靠前。
-                        if (text.length > summary.length) {
-                            summary = text;
-                            report();
-                        }
+                        summary = emitText(summary, text, "assistant");
+                        break;
+                    }
+                    case "reasoning_delta": {
+                        const text = typeof event.payload?.text === "string" ? event.payload.text : "";
+                        if (text) reasoning = emitText(reasoning, reasoning + text, "reasoning");
+                        break;
+                    }
+                    case "reasoning_message": {
+                        const text = typeof event.payload?.text === "string" ? event.payload.text : "";
+                        reasoning = emitText(reasoning, text, "reasoning");
                         break;
                     }
                     case "tool_completed":
@@ -233,6 +266,9 @@ export async function runPortfolioAnnotationAgent(options: PortfolioAgentRunOpti
                         const toolName = typeof event.payload?.toolName === "string" ? event.payload.toolName : "";
                         const stage = PORTFOLIO_AGENT_TOOL_STAGES[toolName];
                         if (stage) report(stage);
+                        // 未登记文案的工具（例如后端新增）不进进度条，但面板的步骤流仍记一笔，
+                        // 否则出现"跑了但界面上什么都没发生"。
+                        options.onEvent?.({ kind: "tool", toolName, label: stage ?? toolName, ok: event.type === "tool_completed" });
                         break;
                     }
                     case "run_failed": {
@@ -242,7 +278,10 @@ export async function runPortfolioAnnotationAgent(options: PortfolioAgentRunOpti
                     }
                     case "run_status": {
                         const next = typeof event.payload?.status === "string" ? (event.payload.status as AgentRun["status"]) : "";
-                        if (next) status = next;
+                        if (next) {
+                            status = next;
+                            options.onEvent?.({ kind: "status", status });
+                        }
                         const message = typeof event.payload?.failureMessage === "string" ? event.payload.failureMessage.trim() : "";
                         if (message) failureMessage = message;
                         if (TERMINAL_STATUSES.has(status)) finish();
@@ -273,7 +312,7 @@ export async function runPortfolioAnnotationAgent(options: PortfolioAgentRunOpti
 
     if (status === "failed" && !failureMessage) failureMessage = "Agent 运行失败";
     if (status === "cancelled") failureMessage = "";
-    return { proposals, summary, status, failureMessage };
+    return { proposals, summary, reasoning, status, failureMessage };
 }
 
 /** 取消运行只吞掉失败：用户已经按了停止，这里再报一个错误没有意义。 */

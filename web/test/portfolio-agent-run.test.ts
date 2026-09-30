@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { buildPortfolioAgentPrompt, parsePortfolioAnnotationProposals, portfolioAgentModelSelection, PORTFOLIO_AGENT_MAX_IMAGES } from "../src/lib/portfolio/agent-run";
+import { buildPortfolioAgentPrompt, parsePortfolioAnnotationProposals, portfolioAgentModelSelection, PORTFOLIO_AGENT_DEFAULT_INSTRUCTION, PORTFOLIO_AGENT_MAX_IMAGES } from "../src/lib/portfolio/agent-run";
 import { isPortfolioShellCanvasId, portfolioShellCanvasId, PORTFOLIO_SHELL_CANVAS_PREFIX } from "../src/lib/portfolio/contracts";
 import { createModelChannel, defaultConfig, type AiConfig } from "../src/stores/use-config-store";
 
@@ -79,6 +79,19 @@ describe("portfolio agent prompt", () => {
         // page 与 lib 用的是同一个常量；这里守住它不会被改成 0 或负数。
         expect(PORTFOLIO_AGENT_MAX_IMAGES).toBeGreaterThan(0);
         expect(PORTFOLIO_AGENT_MAX_IMAGES).toBe(8);
+    });
+
+    test("面板改写的要求在最前，执行步骤依然完整", () => {
+        const images = [{ id: "img-1", caption: "", tags: [] }];
+        const prompt = buildPortfolioAgentPrompt({ pageId: "page-1", pageName: "封面", images, instruction: "只给横版图片配文" });
+        // 用户要求在前：模型先读到"要什么"，再读到"怎么做"。
+        expect(prompt.startsWith("只给横版图片配文")).toBe(true);
+        // 执行步骤不能被用户的自由输入挤掉——挤掉就会漏工具或漏元素 ID。
+        for (const token of ["portfolio_read_document", "portfolio_inspect_image", "portfolio_propose_annotations", "page-1", "img-1"]) {
+            expect(prompt).toContain(token);
+        }
+        // 空白输入退回默认要求，避免提示词以空行开头。
+        expect(buildPortfolioAgentPrompt({ pageId: "page-1", pageName: "封面", images, instruction: "   " })).toContain(PORTFOLIO_AGENT_DEFAULT_INSTRUCTION);
     });
 });
 

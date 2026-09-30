@@ -41,7 +41,7 @@ export function PortfolioInspector() {
     const single = selected.length === 1 ? selected[0] : null;
 
     return (
-        <aside className="w-72 shrink-0 overflow-y-auto thin-scrollbar border-l border-border/60 bg-background p-3">
+        <div className="thin-scrollbar h-full overflow-y-auto p-3">
             {single ? (
                 <div className="space-y-3">
                     <header className="text-[var(--fs-body)] font-medium">{single.kind === "image" ? "图片元素" : "文字元素"}</header>
@@ -131,7 +131,7 @@ export function PortfolioInspector() {
                     <p className="text-[var(--fs-micro)] leading-5 text-foreground/55">在画布空白处拖动可框选元素；双击文字元素可直接编辑文案。</p>
                 </div>
             )}
-        </aside>
+        </div>
     );
 }
 
