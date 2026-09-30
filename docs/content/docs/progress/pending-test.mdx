@@ -2806,3 +2806,14 @@ SSE 现在按 revision 变化发送紧凑快照，无变化只 heartbeat；客�
 - [ ] GitHub Actions 确认 PostgreSQL / Redis 依赖测试、前后端检查、支付插件双架构 smoke 和 amd64/arm64 镜像构建全部通过后再部署。
 - [ ] 部署后使用真实登录态验证 Agent 多轮会话、Skill 按需读取、工具审批/继续、进程重启后的会话恢复，以及用户/画布之间的会话隔离；不以健康检查替代该链路。
 - [ ] 在隔离数据库备份上验收 schema v42 的 `cloud_agent_pi_sessions` 迁移与回滚方案；不得在生产服务器手工改数据库或代码。
+
+## 作品集工作台接入内置云 Agent（2026-09-30）
+
+- 已实现：作品集的「Agent 分类配文」改为调用影策内置云 Agent（`POST /agent/runs` + SSE 事件流），删除插件自建的 `web/src/lib/portfolio/agent.ts`。运行身份由作品集文档 ID 派生成 `pf-<文档ID>` 的壳画布，后端在首次运行时惰性创建，不新增表/列/迁移。
+- 已实现：三个作品集工具（`portfolio_read_document` 只读投影、`portfolio_inspect_image` 看图、`portfolio_propose_annotations` 只登记建议）。Agent 不改作品集文档：建议通过 `portfolio_annotations_proposed` 事件回到界面，用户勾选确认后才写入，可一步撤销。
+- 已实现：作品集运行不声明画布上下文，因此运行里不注册任何画布工具与媒体生成工具；工具表注册、运行期分派与平台能力集的一致性由 `TestCloudAgentToolTableMatchesRuntimeDispatch` 守卫。
+- [x] 后端：`gofmt` / `go vet` 干净，`TestPortfolioAgent*`（6 项）与工具表守卫通过，`Portfolio|CloudAgent` 相关回归通过。
+- [x] 前端：`tsc --noEmit`、`eslint src test`、改动文件的 `prettier --check` 通过；新增 `web/test/portfolio-agent-run.test.ts`（8 项）覆盖壳画布 ID 派生、受管模型解析、提示词要素与建议解析。
+- [x] 接口级验证（开发栈 18080）：带真实登录态向 `POST /agent/runs` 提交 `canvasId=pf-<真实文档ID>`、`contextScope=[]` 的运行请求，确认壳画布按需创建成功（`canvas_projects` 出现 `pf-5ac1b720…`，标题「作品集：我的第一本作品集」），且缺少有效渠道模型时在准入阶段被拒（400「指定的渠道不存在」）。验证用的临时会话行已删除。
+- [ ] **阻塞项**：开发栈数据库 `model_channels = 0`，内置 Agent 必须使用后端受管的文本模型，因此本轮无法完成真实模型端到端。需在开发实例后台录入一条渠道，并让至少一个文本模型声明「最大参考图片数 > 0」（看图配文依赖该声明；`logicalModelId` 形式拿不到此能力声明，不会被判为支持看图）。
+- [ ] 配好模型后登录真实页面验收：导入图片 → Agent 分类配文 → 确认弹窗勾选 → 写入文档 → 撤销 → 导出 HTML/PNG 的一致性；同时确认壳画布不出现在画布列表与列表计数里。
