@@ -62,8 +62,27 @@ services:
         target: /tmp/go-mod
         bind:
           create_host_path: false
+      # 放在宿主仓库里的 node_modules 会被上面的 bind mount 覆盖，所以单独挂一个宿主目录
+      # 持久化（与 go-build/go-mod 缓存同一套做法：命名卷默认 root 所有，容器以 1000 跑会 EACCES）。
+      - type: bind
+        source: ./.local/cache/pi-node-modules
+        target: /workspace/backend/agent-runtime/pi/node_modules
+        bind:
+          create_host_path: false
     ports:
       - "127.0.0.1:${CANVAS_BACKEND_HOST_PORT:-8080}:8080"
+    # 内置云 Agent 的嵌入模式由后端 exec node 拉起 agent-runtime/pi/agent-runtime.mjs，
+    # 所以容器里既要有 Node，也要有 pi 的 node_modules。依赖装在挂载进来的缓存目录里，
+    # 容器重建不必重装；用 npm ci 自己写的标记文件判断是否装过（空目录也算没装）。
+    command:
+      - sh
+      - -c
+      - |
+        if [ ! -f agent-runtime/pi/node_modules/.package-lock.json ]; then
+          (cd agent-runtime/pi && npm ci --omit=dev --ignore-scripts) \
+            || echo "[dev] 安装 Agent 运行时依赖失败，内置 Agent 将不可用"
+        fi
+        exec air -c .air.toml
     init: true
 
   web:

@@ -5,8 +5,12 @@ ARG GOPROXY=https://proxy.golang.org,direct
 ARG ALPINE_MIRROR
 ENV GOPROXY=$GOPROXY
 
+# nodejs / npm 是内置云 Agent 的运行时依赖：不设 YINGCE_AGENT_URL 时后端会在本进程内
+# exec node 拉起 backend/agent-runtime/pi/agent-runtime.mjs（见 internal/agent/runtime/runtime.go）。
+# pi 运行时要求 Node >= 22.19（backend/agent-runtime/pi/package.json engines），
+# Alpine 3.24 仓库里的 nodejs 满足该约束。
 RUN if [ -n "$ALPINE_MIRROR" ]; then sed -i "s#https://dl-cdn.alpinelinux.org#${ALPINE_MIRROR}#g" /etc/apk/repositories; fi \
-    && apk add --no-cache build-base git \
+    && apk add --no-cache build-base git nodejs npm \
     && go install github.com/air-verse/air@v1.63.0
 
 WORKDIR /workspace/backend
