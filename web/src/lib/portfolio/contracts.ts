@@ -94,6 +94,26 @@ export type PortfolioRect = { x: number; y: number; width: number; height: numbe
 
 export type PortfolioAlignMode = "left" | "center-x" | "right" | "top" | "center-y" | "bottom";
 
+/**
+ * 作品集在影策内置云 Agent 里的运行身份。
+ *
+ * 云 Agent 以 canvasId 作为整条运行的租户主键（存在性 + 归属 + 提示词缓存键 + 幂等指纹），
+ * 而作品集不是画布。这里没有放宽那个契约，而是让每份作品集派生一张"身份壳画布"
+ * （`pf-<文档ID>`，由后端惰性创建）。壳画布不承载作品集内容，作品集文档始终是唯一真相源，
+ * 因此它必须从画布列表里滤掉——用户点开它只会看到一张空画布。
+ *
+ * 前缀必须与后端 `portfolio_agent.go` 的 `cloudAgentPortfolioShellPrefix` 保持一致。
+ */
+export const PORTFOLIO_SHELL_CANVAS_PREFIX = "pf-";
+
+export function portfolioShellCanvasId(documentId: string) {
+    return `${PORTFOLIO_SHELL_CANVAS_PREFIX}${documentId.trim()}`;
+}
+
+export function isPortfolioShellCanvasId(canvasId: string) {
+    return canvasId.startsWith(PORTFOLIO_SHELL_CANVAS_PREFIX) && canvasId.length > PORTFOLIO_SHELL_CANVAS_PREFIX.length;
+}
+
 /** 吸附参考线：position 是吸附后元素边/中心应当对齐到的坐标。 */
 export type PortfolioSnapGuide = {
     axis: "x" | "y";

@@ -5,7 +5,7 @@
  * 「文档生命周期 + 快捷键 + 拖拽导入 + Agent 调度」，排版与交互都在下层组件里。
  */
 
-import { App, Button, Dropdown, Input, Modal, Spin } from "antd";
+import { App, Button, Checkbox, Dropdown, Input, Modal, Spin, Tag } from "antd";
 import { FilePlus2, FolderOpen, Loader2, Sparkles } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
@@ -17,12 +17,12 @@ import { PortfolioInspector } from "@/components/portfolio/portfolio-inspector";
 import { PortfolioSidebar } from "@/components/portfolio/portfolio-sidebar";
 import { PortfolioToolbar } from "@/components/portfolio/portfolio-toolbar";
 import { EmptyState } from "@/components/ui/product/empty-state";
-import { createPortfolioAgent } from "@/lib/portfolio/agent";
+import { PORTFOLIO_AGENT_MAX_IMAGES, runPortfolioAnnotationAgent } from "@/lib/portfolio/agent-run";
 import { isPortfolioDocument, PORTFOLIO_MAX_DOC_BYTES, type PortfolioDocument, type PortfolioElementPatch } from "@/lib/portfolio/contracts";
 import { createPortfolioDocument as createBlankDocument } from "@/lib/portfolio/document";
 import { runPortfolioExport } from "@/lib/portfolio/export";
 import { PORTFOLIO_EXPORT_DEFAULT_SCALE, type PortfolioExportTarget } from "@/lib/portfolio/export/types";
-import { imageFilesFromDataTransfer, readLocalImage, uploadLocalImage } from "@/lib/portfolio/image-import";
+import { imageFilesFromDataTransfer, readLocalImage, uploadImageSource, uploadLocalImage } from "@/lib/portfolio/image-import";
 import { currentPortfolioPage, isPortfolioDocumentTooLarge, usePortfolioStore } from "@/lib/portfolio/store";
 import { PORTFOLIO_STUDIO_PLUGIN_ID, portfolioStudioPlugin } from "@/lib/plugins/builtin/portfolio/portfolio-studio";
 import { createPortfolioDocument as createRemoteDocument, getPortfolioDocument, listPortfolioDocuments, savePortfolioDocument, type PortfolioDocumentSummary } from "@/services/api/portfolio";
@@ -30,8 +30,16 @@ import { useEffectiveConfig } from "@/stores/use-config-store";
 import { usePluginStore } from "@/stores/use-plugin-store";
 import "./portfolio.css";
 
-/** 单次交给模型的图片上限：再多会让请求体积与耗时都失控。 */
-const CLASSIFY_BATCH_SIZE = 8;
+/** 页面上把这些内容原样展示给用户确认，不做自动写入。 */
+type ProposalReviewItem = {
+    elementId: string;
+    caption: string;
+    tags: string[];
+    previousCaption: string;
+    previousTags: string[];
+    previewSrc: string;
+    accepted: boolean;
+};
 
 export default function PortfolioStudioPage() {
     const navigate = useNavigate();
@@ -52,6 +60,9 @@ export default function PortfolioStudioPage() {
 
     const [documents, setDocuments] = useState<PortfolioDocumentSummary[]>([]);
     const [classifying, setClassifying] = useState(false);
+    /** Agent 运行期的一句话进度，避免长时间只转圈不给信息。 */
+    const [agentStage, setAgentStage] = useState("");
+    const [reviewItems, setReviewItems] = useState<ProposalReviewItem[]>([]);
     const [exporting, setExporting] = useState(false);
     const [exportStage, setExportStage] = useState("");
     const [exportScale, setExportScale] = useState<number>(PORTFOLIO_EXPORT_DEFAULT_SCALE);
@@ -66,6 +77,10 @@ export default function PortfolioStudioPage() {
     useEffect(() => {
         ensurePlugin(portfolioStudioPlugin.manifest);
     }, [ensurePlugin]);
+
+    // 离开工作台就取消在跑的 Agent：结果只会落在这一页的确认弹窗里，用户走了就看不到了，
+    // 让它继续跑只是白烧额度。
+    useEffect(() => () => abortRef.current?.abort(), []);
 
     const openDocument = useCallback(
         async (id: string) => {
@@ -174,52 +189,135 @@ export default function PortfolioStudioPage() {
         [importFiles],
     );
 
-    // ---- Agent 分类配文 ----
-    const classify = useCallback(async () => {
-        if (!installation) return;
+    // ---- Agent 分类配文（走影策内置云 Agent）----
+    //
+    // 三个前置条件缺一不可，顺序也不能换：
+    //   1. 图片必须是账号资源——内置 Agent 的看图工具只认资源 ID，内嵌 data URL 递不过去；
+    //   2. 文档必须已经落库——Agent 读的是服务端那份文档，不是本地草稿；
+    //   3. 补传图片会弄脏文档，所以"补传"必须在"保存"之前，否则 Agent 读到的是没有
+    //      assetId 的旧快照，看图会整批失败。
+    const runAgent = useCallback(async () => {
         const store = usePortfolioStore.getState();
         const page = currentPortfolioPage(store);
         if (!page) return;
-        const images = page.elements.filter((element) => element.kind === "image").slice(0, CLASSIFY_BATCH_SIZE);
+        const images = page.elements.filter((element) => element.kind === "image").slice(0, PORTFOLIO_AGENT_MAX_IMAGES);
         if (images.length === 0) {
             void message.info("当前页还没有图片可以分析");
             return;
         }
         setClassifying(true);
+        setAgentStage("正在准备图片…");
         abortRef.current?.abort();
         const controller = new AbortController();
         abortRef.current = controller;
         try {
-            const agent = createPortfolioAgent(portfolioStudioPlugin, installation, config);
-            const suggestions = await agent.classify(
-                images.map((element) => ({ id: element.id, url: element.src })),
-                controller.signal,
-            );
-            if (suggestions.length === 0) {
-                void message.warning("模型没有返回可用的分类结果");
+            const uploading = images.filter((element) => element.kind === "image" && !element.assetId.trim());
+            if (uploading.length > 0) {
+                setAgentStage("正在上传图片到账号资源…");
+                const failures = await Promise.all(
+                    uploading.map(async (element) => {
+                        if (element.kind !== "image") return 0;
+                        const uploaded = await uploadImageSource(element.src, { width: element.naturalWidth, height: element.naturalHeight });
+                        if (uploaded) usePortfolioStore.getState().updateElement(element.id, uploaded);
+                        return uploaded ? 0 : 1;
+                    }),
+                );
+                const failed = failures.reduce<number>((total, value) => total + value, 0);
+                if (failed > 0) void message.warning(`有 ${failed} 张图片没能存进账号资源，Agent 看不到它们的画面`);
+            }
+            if (controller.signal.aborted) return;
+
+            setAgentStage("正在保存作品集…");
+            const latest = usePortfolioStore.getState();
+            if (!latest.remoteId || latest.dirty) await save();
+            const documentId = usePortfolioStore.getState().remoteId;
+            if (!documentId) {
+                void message.error("作品集还没保存到服务端，Agent 读不到内容；请先确认后端可用后重试");
                 return;
             }
-            // 汇总成一次补丁写入，撤销时一步回到分析前。
-            const patches = new Map<string, PortfolioElementPatch>();
-            const latest = usePortfolioStore.getState();
-            const latestPage = currentPortfolioPage(latest);
-            for (const suggestion of suggestions) {
-                const element = latestPage?.elements.find((item) => item.id === suggestion.id);
+
+            // 以落库后的文档为准重新取目标：补传成功的图片此时才有 assetId。
+            const readyPage = currentPortfolioPage(usePortfolioStore.getState());
+            if (!readyPage) return;
+            const targets = readyPage.elements.filter((element) => element.kind === "image" && element.assetId.trim() !== "").slice(0, PORTFOLIO_AGENT_MAX_IMAGES);
+            if (targets.length === 0) {
+                void message.error("这些图片还不是账号资源，Agent 无法查看画面；请重新导入后再试");
+                return;
+            }
+
+            setAgentStage("Agent 正在分析当前页图片…");
+            const result = await runPortfolioAnnotationAgent({
+                documentId,
+                pageId: readyPage.id,
+                pageName: readyPage.name,
+                images: targets.map((element) => ({ id: element.id, caption: element.kind === "image" ? element.caption : "", tags: element.kind === "image" ? element.tags : [] })),
+                config,
+                model: config.model,
+                onProgress: (progress) => setAgentStage(progress.stage),
+                signal: controller.signal,
+            });
+            if (controller.signal.aborted) return;
+
+            // 建议只对"仍然存在"的图片生效：运行期间用户可能删过元素或换了页。
+            const currentPageAfterRun = currentPortfolioPage(usePortfolioStore.getState());
+            const reviewed: ProposalReviewItem[] = [];
+            const seen = new Set<string>();
+            for (const proposal of result.proposals) {
+                if (seen.has(proposal.elementId)) continue;
+                const element = currentPageAfterRun?.elements.find((item) => item.id === proposal.elementId);
                 if (!element || element.kind !== "image") continue;
-                const tags = Array.from(new Set([...element.tags, ...suggestion.tags]));
-                patches.set(suggestion.id, { caption: suggestion.caption || element.caption, tags });
+                seen.add(proposal.elementId);
+                reviewed.push({
+                    elementId: element.id,
+                    caption: proposal.caption || element.caption,
+                    tags: proposal.tags,
+                    previousCaption: element.caption,
+                    previousTags: element.tags,
+                    previewSrc: element.src,
+                    accepted: true,
+                });
             }
-            if (patches.size > 0) {
-                latest.applyElementPatches(patches);
-                void message.success(`已为 ${patches.size} 张图片补充分类与图注`);
+            if (reviewed.length > 0) {
+                setReviewItems(reviewed);
+                return;
             }
+            if (result.status === "failed" || result.status === "cancelled") {
+                void message.error(result.failureMessage || "Agent 运行没有完成");
+                return;
+            }
+            void message.warning(result.summary.trim() || "Agent 没有给出可用的分类结果");
         } catch (reason) {
             if (controller.signal.aborted) return;
             void message.error(reason instanceof Error ? reason.message : "Agent 分析失败");
         } finally {
             setClassifying(false);
+            setAgentStage("");
         }
-    }, [config, installation, message]);
+    }, [config, message, save]);
+
+    const toggleReviewItem = useCallback((elementId: string, accepted: boolean) => {
+        setReviewItems((current) => current.map((item) => (item.elementId === elementId ? { ...item, accepted } : item)));
+    }, []);
+
+    /** 提议制落地：只有用户勾过的条目才写进文档，且一次性提交，撤销回到分析前。 */
+    const applyReviewedProposals = useCallback(() => {
+        const store = usePortfolioStore.getState();
+        const page = currentPortfolioPage(store);
+        const patches = new Map<string, PortfolioElementPatch>();
+        for (const item of reviewItems) {
+            if (!item.accepted) continue;
+            const element = page?.elements.find((candidate) => candidate.id === item.elementId);
+            if (!element || element.kind !== "image") continue;
+            patches.set(item.elementId, { caption: item.caption || element.caption, tags: Array.from(new Set([...element.tags, ...item.tags])) });
+        }
+        setReviewItems([]);
+        if (patches.size === 0) {
+            void message.info("没有选中任何建议");
+            return;
+        }
+        store.applyElementPatches(patches);
+        void message.success(`已写入 ${patches.size} 张图片的分类与图注`);
+    }, [message, reviewItems]);
 
     const classifyDisabled = !currentPage || currentPage.elements.every((element) => element.kind !== "image");
 
@@ -368,7 +466,7 @@ export default function PortfolioStudioPage() {
             <PortfolioToolbar
                 onBack={() => navigate("/plugins")}
                 onSave={() => void save()}
-                onClassify={() => void classify()}
+                onClassify={() => void runAgent()}
                 onFit={() => canvasHandleRef.current?.fit()}
                 classifyDisabled={classifyDisabled}
                 classifying={classifying}
@@ -423,9 +521,14 @@ export default function PortfolioStudioPage() {
                             </div>
                         ) : null}
                         {exporting || classifying ? (
-                            <div className="pointer-events-none absolute bottom-3 left-1/2 z-10 -translate-x-1/2 rounded-full bg-background/95 px-3 py-1.5 text-[var(--fs-micro)] shadow-sm">
-                                <Loader2 className="mr-1.5 inline size-3.5 animate-spin" />
-                                {exporting ? exportStage || "正在导出…" : "Agent 正在分析当前页图片…"}
+                            <div className="absolute bottom-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full bg-background/95 px-3 py-1.5 text-[var(--fs-micro)] shadow-sm">
+                                <Loader2 className="size-3.5 animate-spin" />
+                                {exporting ? exportStage || "正在导出…" : agentStage || "Agent 正在分析当前页图片…"}
+                                {classifying ? (
+                                    <Button type="link" size="small" className="!h-auto !px-1" onClick={() => abortRef.current?.abort()}>
+                                        停止
+                                    </Button>
+                                ) : null}
                             </div>
                         ) : null}
                     </div>
@@ -446,6 +549,38 @@ export default function PortfolioStudioPage() {
                 destroyOnHidden
             >
                 <Input.TextArea value={textDraft} onChange={(event) => setTextDraft(event.target.value)} autoSize={{ minRows: 6, maxRows: 16 }} placeholder="输入作品集里的标题、说明或图注" />
+            </Modal>
+
+            <Modal open={reviewItems.length > 0} title="Agent 建议" width={640} onCancel={() => setReviewItems([])} onOk={applyReviewedProposals} okText="写入作品集" cancelText="放弃" destroyOnHidden>
+                <p className="mb-3 text-[var(--fs-micro)] text-foreground/60">Agent 只提交建议，没有改动文档；勾选后写入，可用撤销一步回到分析前。标签会与原有标签合并。</p>
+                <div className="flex max-h-[52vh] flex-col gap-2 overflow-y-auto pr-1">
+                    {reviewItems.map((item) => (
+                        <div key={item.elementId} className="flex items-start gap-3 rounded-[var(--r-md)] border border-border/60 p-2">
+                            <Checkbox className="mt-0.5" checked={item.accepted} onChange={(event) => toggleReviewItem(item.elementId, event.target.checked)} />
+                            {item.previewSrc ? <img src={item.previewSrc} alt="" className="size-12 shrink-0 rounded-[var(--r-sm)] object-cover" /> : null}
+                            <div className="min-w-0 flex-1">
+                                <div className="text-[var(--fs-body)] leading-snug break-words">{item.caption || "（未给出图注）"}</div>
+                                <div className="mt-1 flex flex-wrap gap-1">
+                                    {item.tags.length > 0 ? (
+                                        item.tags.map((tag) => (
+                                            <Tag key={tag} className="!m-0">
+                                                {tag}
+                                            </Tag>
+                                        ))
+                                    ) : (
+                                        <span className="text-[var(--fs-micro)] text-foreground/45">未给出标签</span>
+                                    )}
+                                </div>
+                                {item.previousCaption || item.previousTags.length > 0 ? (
+                                    <div className="mt-1 text-[var(--fs-micro)] text-foreground/45">
+                                        原图注：{item.previousCaption || "（无）"}
+                                        {item.previousTags.length > 0 ? ` · 原标签：${item.previousTags.join("、")}` : ""}
+                                    </div>
+                                ) : null}
+                            </div>
+                        </div>
+                    ))}
+                </div>
             </Modal>
         </main>
     );

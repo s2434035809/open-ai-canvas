@@ -51,6 +51,27 @@ export async function uploadLocalImage(file: Blob, image: LocalImage): Promise<{
     }
 }
 
+/**
+ * 把只有内嵌地址的图片补传成账号资源。
+ *
+ * 内置云 Agent 的看图工具只接受账号资源（后端按 resourceId 读取真实文件再交给模型），
+ * 内嵌 data URL 是拿不过去的。导入时已经异步传过一次，这里是给"当时上传失败"或
+ * "从本地草稿恢复"的图片补一次机会；仍然失败就由调用方明确告诉用户哪些图没法看。
+ */
+export async function uploadImageSource(src: string, meta: { fileName?: string; width?: number; height?: number } = {}): Promise<{ assetId: string; src: string } | null> {
+    if (!src.trim()) return null;
+    try {
+        const response = await fetch(src);
+        if (!response.ok) return null;
+        const blob = await response.blob();
+        if (!blob.type.startsWith("image/")) return null;
+        const resource = await uploadResourceFile(blob, "image", { fileName: meta.fileName || "作品集图片", width: meta.width, height: meta.height });
+        return { assetId: resource.id, src: resource.publicUrl || resourceFileUrl(resource.id) };
+    } catch {
+        return null;
+    }
+}
+
 /** 从拖拽事件里取出图片文件；过滤掉 URL 拖拽等非文件内容。 */
 export function imageFilesFromDataTransfer(transfer: DataTransfer | null): File[] {
     if (!transfer) return [];

@@ -20,6 +20,7 @@ import { flushCanvasStorePersistence, useCanvasStore } from "@/stores/canvas/use
 import { useCanvasUiStore } from "@/stores/canvas/use-canvas-ui-store";
 import { exportCanvasProjects } from "@/lib/canvas/canvas-export";
 import { saveCanvasDrawing, type CanvasDrawingRenderDraft } from "@/lib/canvas/canvas-drawing-storage";
+import { isPortfolioShellCanvasId } from "@/lib/portfolio/contracts";
 import { createCanvasProjectWithRemoteSync, hasRemoteUserDataSyncSession, loadCanvasProjectForEditing, saveRemoteUserDataNow, scheduleRemoteUserDataSync } from "@/services/user-data-sync";
 import { listRemoteCanvasProjectsPage, type CanvasLibrarySummary } from "@/services/api/user-data";
 import { useUserStore } from "@/stores/use-user-store";
@@ -64,10 +65,15 @@ export default function CanvasPage() {
         getNextPageParam: (last) => last.hasMore ? last.page + 1 : undefined,
         enabled: Boolean(userId) && sessionHydrated,
     });
-    const projects = useMemo<CanvasLibrarySummary[]>(() => userId
-        ? libraryQuery.data?.pages.flatMap((page) => page.projects) || []
-        : localProjects.map((project) => ({ ...project, nodeCount: project.nodes.length, previewNodes: project.nodes.slice(0, 4) })), [libraryQuery.data, localProjects, userId]);
-    const totalProjects = userId ? libraryQuery.data?.pages[0]?.total || 0 : projects.length;
+    const libraryProjects = useMemo<CanvasLibrarySummary[]>(() => libraryQuery.data?.pages.flatMap((page) => page.projects) || [], [libraryQuery.data]);
+    // 作品集的 "pf-<文档ID>" 壳画布只是云 Agent 的运行身份，不是用户画布（见 contracts.ts）：
+    // 留在这里会变成点开只有空白的幽灵画布，"最近画布"的自动打开还会被它顶掉。
+    const projects = useMemo<CanvasLibrarySummary[]>(() => {
+        const items = userId ? libraryProjects : localProjects.map((project) => ({ ...project, nodeCount: project.nodes.length, previewNodes: project.nodes.slice(0, 4) }));
+        return items.filter((project) => !isPortfolioShellCanvasId(project.id));
+    }, [libraryProjects, localProjects, userId]);
+    // 服务端总数包含壳画布，按已加载页里滤掉的数量抵扣；壳画布只在跑过 Agent 时才产生，量很小。
+    const totalProjects = userId ? Math.max(0, (libraryQuery.data?.pages[0]?.total || 0) - (libraryProjects.length - projects.length)) : projects.length;
     const importProject = useCanvasStore((state) => state.importProject);
     const selectedIds = useCanvasUiStore((state) => state.selectedProjectIds);
     const deleteDialogOpen = useCanvasUiStore((state) => state.deleteProjectIds.length > 0);
