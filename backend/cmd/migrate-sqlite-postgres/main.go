@@ -464,5 +464,6 @@ func migrations() []tableMigration {
 		migrateTable[model.TaskTextDelta]("task_text_delta"),
 		migrateTable[model.TaskLog]("task_logs"),
 		migrateTable[model.Result]("results"),
+		migrateTable[model.PortfolioDocument]("portfolio_documents"),
 	}
 }

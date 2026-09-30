@@ -113,6 +113,7 @@ func Models() []any {
 		&model.TaskTextDelta{},
 		&model.TaskLog{},
 		&model.Result{},
+		&model.PortfolioDocument{},
 	}
 }
 

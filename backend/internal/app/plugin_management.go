@@ -15,6 +15,7 @@ const (
 	PluginAIArtCritique       = "ai-art-critique"
 	PluginMediaConversion     = "media-conversion"
 	PluginEditorShell         = "editor-shell"
+	PluginPortfolioStudio     = "portfolio-studio"
 
 	PluginOriginOfficial = "official"
 	PluginOriginSystem   = "system"
@@ -84,6 +85,10 @@ var officialApplicationPolicies = map[string]PluginManagementView{
 		ActivationScope: PluginScopeUser, ConfigurationScope: PluginConfigurationNone,
 	},
 	PluginEditorShell: {
+		Origin: PluginOriginOfficial, Kind: PluginKindApplication,
+		ActivationScope: PluginScopeUser, ConfigurationScope: PluginConfigurationNone,
+	},
+	PluginPortfolioStudio: {
 		Origin: PluginOriginOfficial, Kind: PluginKindApplication,
 		ActivationScope: PluginScopeUser, ConfigurationScope: PluginConfigurationNone,
 	},
@@ -226,7 +231,9 @@ func (s *Service) pluginStateForUser(actor *model.User, pluginID string, items [
 		// explicitly saves a personal choice. Other official applications were
 		// already controlled by each user's local installation state.
 		if !userConfigured {
-			if pluginID == PluginMediaConversion {
+			// 作品集工作台与媒体转换一样是随宿主一起交付的本地创作能力，
+			// 没有需要额外配置的外部依赖，所以首次默认启用；用户仍可在插件中心关闭。
+			if pluginID == PluginMediaConversion || pluginID == PluginPortfolioStudio {
 				userEnabled = true
 			} else if hasRuntime && pluginID == WorkflowPluginRunningHub {
 				userEnabled = runtimePlugin.Status == "enabled"

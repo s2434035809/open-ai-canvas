@@ -1,4 +1,4 @@
-name: open-ai-canvas-dev
+name: yingce-ai-portfolio
 
 services:
   backend:
@@ -15,10 +15,21 @@ services:
       HOME: /tmp
       GOCACHE: /tmp/go-build
       GOMODCACHE: /tmp/go-mod
+      # 容器内 HOME=/tmp，git 的 --global 配置容器一重建就丢，air 的 go build 会因为
+      # 「dubious ownership」报 VCS status 错误（exit 128）。
+      # 用 git 的 GIT_CONFIG_* 环境变量直接注入，不依赖任何文件，重新克隆也能用。
+      GIT_CONFIG_COUNT: "1"
+      GIT_CONFIG_KEY_0: safe.directory
+      GIT_CONFIG_VALUE_0: /workspace
       CANVAS_BACKEND_ADDR: ":8080"
       CANVAS_BACKEND_DATA_DIR: /data
       CANVAS_DATABASE_DRIVER: ${CANVAS_DATABASE_DRIVER:-sqlite}
-      DATABASE_URL: ${DATABASE_URL:-}
+      # 开发栈固定用 sqlite，**不要**继承 .env 里的 DATABASE_URL（那是 deploy 栈的 postgres
+      # 连接串）。原因：cmd/server/main.go 用 os.Getenv("DATABASE_URL") 直接当 DSN 传给
+      # database.Open，而 sqlite 分支在 DSN 非空时会把整串当文件名去打开，报
+      # 「unable to open database file: no such file or directory」。
+      # 想在开发栈用 postgres，显式给 CANVAS_DEV_DATABASE_URL + CANVAS_DATABASE_DRIVER=postgres。
+      DATABASE_URL: ${CANVAS_DEV_DATABASE_URL:-}
       REDIS_URL: ${REDIS_URL:-}
       CANVAS_WORKER_CONCURRENCY: ${CANVAS_WORKER_CONCURRENCY:-3}
       CANVAS_CHANNEL_CONCURRENCY: ${CANVAS_CHANNEL_CONCURRENCY:-3}
@@ -51,8 +62,27 @@ services:
         target: /tmp/go-mod
         bind:
           create_host_path: false
+      # 放在宿主仓库里的 node_modules 会被上面的 bind mount 覆盖，所以单独挂一个宿主目录
+      # 持久化（与 go-build/go-mod 缓存同一套做法：命名卷默认 root 所有，容器以 1000 跑会 EACCES）。
+      - type: bind
+        source: ./.local/cache/pi-node-modules
+        target: /workspace/backend/agent-runtime/pi/node_modules
+        bind:
+          create_host_path: false
     ports:
       - "127.0.0.1:${CANVAS_BACKEND_HOST_PORT:-8080}:8080"
+    # 内置云 Agent 的嵌入模式由后端 exec node 拉起 agent-runtime/pi/agent-runtime.mjs，
+    # 所以容器里既要有 Node，也要有 pi 的 node_modules。依赖装在挂载进来的缓存目录里，
+    # 容器重建不必重装；用 npm ci 自己写的标记文件判断是否装过（空目录也算没装）。
+    command:
+      - sh
+      - -c
+      - |
+        if [ ! -f agent-runtime/pi/node_modules/.package-lock.json ]; then
+          (cd agent-runtime/pi && npm ci --omit=dev --ignore-scripts) \
+            || echo "[dev] 安装 Agent 运行时依赖失败，内置 Agent 将不可用"
+        fi
+        exec air -c .air.toml
     init: true
 
   web:

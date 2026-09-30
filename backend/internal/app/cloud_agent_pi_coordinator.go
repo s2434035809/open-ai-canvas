@@ -782,6 +782,14 @@ func (s *Service) runCloudAgentModelStep(ctx context.Context, userID, runID stri
 			// 纠偏上下文只用于这一次请求，不写回运行状态，避免下一步重复出现。
 			canonical.Messages = append(append([]map[string]any(nil), canonical.Messages...), correction...)
 		}
+		// 参考图白名单（与旧路径 cloud_agent_runtime.go 的入队分支保持一致）：
+		// canonical 里的图片仍是 resource:<id> 占位符，必须在这里登记"本步真正发给
+		// 模型的图片"，否则下游 hydrate 会把占位符判成未获准的图片并让整轮失败。
+		// 它同时负责按模型图片上限裁剪旧图；只作用于本次请求，不回写 state.Canonical。
+		references, refErr := s.cloudAgentImageReferences(userID, state.Request, &canonical)
+		if refErr != nil {
+			return nil, false, refErr
+		}
 		input := map[string]any{
 			"mode":          "text",
 			"prompt":        state.Request.Prompt,
@@ -796,6 +804,9 @@ func (s *Service) runCloudAgentModelStep(ctx context.Context, userID, runID stri
 				"thinking":        thinkingLevel != "off",
 				"maxOutputTokens": cloudAgentStepOutputBudget(state.StepLimits, state.BoostStepOutputBudget),
 			},
+		}
+		if len(references) > 0 {
+			input["referenceImages"] = references
 		}
 		req := CreateTaskRequest{
 			ProjectID: state.Request.CanvasID,

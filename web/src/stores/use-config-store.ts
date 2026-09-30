@@ -913,6 +913,7 @@ export function defaultBaseUrlForApiFormat(apiFormat: ApiCallFormat) {
 
 export function defaultBaseUrlForChannelInterface(interfaceType?: ChannelInterfaceType) {
     if (interfaceType === "gemini-veo" || interfaceType === "gemini-image") return GEMINI_BASE_URL;
+    if (interfaceType === "qwen-image-2-1") return "http://47.111.83.139:13527";
     if (interfaceType === "novita-video") return "https://api.novita.ai/v3";
     if (interfaceType === "volcengine-ark-agent-plan-image" || interfaceType === "volcengine-ark-agent-plan-video") return "https://ark.cn-beijing.volces.com/api/plan/v3";
     if (interfaceType === "volcengine-ark-image" || interfaceType === "volcengine-ark-video") return "https://ark.cn-beijing.volces.com/api/v3";

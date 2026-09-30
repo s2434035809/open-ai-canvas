@@ -11,6 +11,7 @@ import { listRegisteredPlugins } from "@/lib/plugins/plugin-registry";
 import "@/lib/plugins/builtin";
 import { EAGLE_PLUGIN_ID } from "@/lib/plugins/builtin/eagle";
 import { PROMPT_OPTIMIZER_PLUGIN_ID } from "@/lib/plugins/builtin/prompt-optimizer";
+import { PORTFOLIO_STUDIO_PLUGIN_ID } from "@/lib/plugins/builtin/portfolio/portfolio-studio";
 import { RUNNINGHUB_PLUGIN_ID } from "@/lib/plugins/builtin/workflows";
 import { isOfficialApplicationPluginId } from "@/lib/plugins/official-applications";
 import type { PluginManifest, PluginManifestV2, RegisteredPlugin } from "@/lib/plugins/plugin-types";
@@ -23,6 +24,16 @@ import { useUserStore } from "@/stores/use-user-store";
 import { PluginDetailsModal } from "./plugin-documentation-modals";
 import "./plugins.css";
 import { Select } from "@/components/ui/base/select";
+
+/**
+ * 无用户级配置项的官方应用：在卡片上直接给「打开」入口。
+ *
+ * 这类应用后端 canConfigure 为 false，卡片不会渲染「设置」按钮，入口只藏在
+ * 设置面板里就等于没有入口；这里按插件 ID 声明宿主内的工作台地址。
+ */
+const applicationOpenRoutes: Record<string, string> = {
+    [PORTFOLIO_STUDIO_PLUGIN_ID]: "/plugins/portfolio",
+};
 
 const categoryLabels: Record<string, string> = {
     provider: "模型渠道",
@@ -198,6 +209,8 @@ export default function PluginsPage() {
 
     const isPluginEnabled = (plugin: RegisteredPlugin, installation = installations.find((item) => item.manifest.id === plugin.manifest.id)) => pluginStates[plugin.manifest.id]?.effectiveEnabled ?? Boolean(installation?.enabled);
 
+    const applicationOpenRoute = (plugin: RegisteredPlugin) => applicationOpenRoutes[plugin.manifest.id];
+
     const togglePlugin = async (plugin: RegisteredPlugin, enabled: boolean) => {
         try {
             const next = await setUserPluginEnabled(plugin.manifest.id, enabled);
@@ -280,16 +293,21 @@ export default function PluginsPage() {
                         </nav>
                     </aside>
                     <div className="plugins-page-content">
-                        <CollectionToolbar label="插件筛选" trailing={<div className="plugins-toolbar-actions">
-                                <Button icon={<RefreshCw className="size-4" />} loading={backendPluginsLoading} onClick={() => void reloadBackendPlugins()}>
-                                    刷新插件
-                                </Button>
-                                {user?.role === "admin" ? (
-                                    <Button type="primary" onClick={() => navigate("/admin/plugins")}>
-                                        管理员插件管理
+                        <CollectionToolbar
+                            label="插件筛选"
+                            trailing={
+                                <div className="plugins-toolbar-actions">
+                                    <Button icon={<RefreshCw className="size-4" />} loading={backendPluginsLoading} onClick={() => void reloadBackendPlugins()}>
+                                        刷新插件
                                     </Button>
-                                ) : null}
-                            </div>}>
+                                    {user?.role === "admin" ? (
+                                        <Button type="primary" onClick={() => navigate("/admin/plugins")}>
+                                            管理员插件管理
+                                        </Button>
+                                    ) : null}
+                                </div>
+                            }
+                        >
                             <Input
                                 className="plugins-search"
                                 prefix={<Search className="size-4 text-foreground/38" aria-hidden="true" />}
@@ -439,6 +457,16 @@ export default function PluginsPage() {
                                                                         >
                                                                             设置
                                                                         </Button>
+                                                                    ) : applicationOpenRoute(plugin) ? (
+                                                                        <Button
+                                                                            className="plugin-settings-button"
+                                                                            icon={<ExternalLink className="size-4" />}
+                                                                            disabled={!enabled}
+                                                                            title={enabled ? undefined : "先启用该应用"}
+                                                                            onClick={() => navigate(applicationOpenRoute(plugin)!)}
+                                                                        >
+                                                                            打开
+                                                                        </Button>
                                                                     ) : null}
                                                                 </div>
 
@@ -572,6 +600,21 @@ export default function PluginsPage() {
                                                 }}
                                             >
                                                 打开工作流设置
+                                            </Button>
+                                        </div>
+                                    ) : settingsPlugin.manifest.id === PORTFOLIO_STUDIO_PLUGIN_ID ? (
+                                        <div className="plugin-settings-empty">
+                                            <p>作品集工作台把导入的图片编排成可分享的作品集，并支持由 Agent 辅助分类与生成文案。</p>
+                                            <Button
+                                                type="primary"
+                                                icon={<ExternalLink className="size-4" />}
+                                                disabled={!settingsEnabled}
+                                                onClick={() => {
+                                                    setSettingsPluginId(null);
+                                                    navigate("/plugins/portfolio");
+                                                }}
+                                            >
+                                                打开作品集工作台
                                             </Button>
                                         </div>
                                     ) : (

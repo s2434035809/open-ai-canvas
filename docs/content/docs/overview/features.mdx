@@ -13,6 +13,22 @@ description: 当前项目已实现的核心工作台能力与使用入口
 
 「站点及外观 → 画布配置」提供独立助手名称、入口文字、面板标题和欢迎/输入文案。支持导入授权的 Live2D Cubism 3/4 运行时 ZIP，预览后保存启用、调整高度、切回默认动态球。加载失败保留可点击的默认入口，上传和资源访问具有管理员校验和引用保护。Cubism Core 由部署者提供，真实播放待验收；不含图片自动建模或 AI 自我介绍同步。详见 [画布 Agent 外观与 Live2D](/docs/backend/canvas-agent-appearance)。
 
+## 作品集工作台的内置 Agent 分类配文
+
+作品集工作台的「Agent 分类配文」直接调用影策内置云 Agent，与画布 Agent 共用同一套运行、工具、事件流与计费预算，不再在插件里另起一套文本模型调用。
+
+- **运行身份**：作品集不是画布，而云 Agent 以 `canvasId` 作为运行主键（存在性 + 归属 + 提示词缓存键 + 幂等指纹）。因此每份作品集派生一张 `pf-<文档ID>` 的"身份壳画布"，由后端在首次运行时按需创建。壳画布不镜像作品集内容，作品集文档始终是唯一真相源；它也会被画布列表按前缀过滤掉，用户不会看到这张空画布。
+- **只读 + 提议**：Agent 通过 `portfolio_read_document` 读页面目录、`portfolio_inspect_image` 查看真实画面（图片必须已存入账号资源库）、`portfolio_propose_annotations` 提交建议。它**不改文档**：建议以 `portfolio_annotations_proposed` 事件回到界面，用户勾选确认后才写入，可用撤销一步回到分析前。
+- **模型要求**：内置 Agent 只接受后端受管文本模型（`channelId + channelModelKey`），拒绝浏览器自带密钥。看图配文依赖声明了图片输入能力（`text.references.maxImages > 0`）的渠道模型；`logicalModelId` 形式拿不到该能力声明，因此不会被判为支持看图。
+- **作用域隔离**：作品集运行不声明画布上下文（`contextScope` 为空），所以运行里不注册任何画布工具与媒体生成工具，模型只能碰作品集自己的三个工具。
+
+### 相关实现
+
+- `web/src/lib/portfolio/agent-run.ts`：壳画布 ID 派生、`createAgentRun` 请求体装配、事件流收集与建议解析。
+- `web/src/pages/portfolio/index.tsx`：图片资源补传 → 保存 → 运行 → 建议确认弹窗 → `applyElementPatches` 写入。
+- `backend/internal/app/portfolio_agent.go`：壳画布惰性创建、文档读投影、看图资源校验、建议登记。
+- `backend/internal/app/cloud_agent_tools.go`：三个作品集工具的注册与平台能力集派生。
+
 ## 素材库分类与画布媒体链路
 
 素材库支持用户手动新增、重命名和删除分类，也可以按分类或“未分类”筛选素材，并批量移动素材。删除分类不会删除素材，分类内素材会回到“未分类”。

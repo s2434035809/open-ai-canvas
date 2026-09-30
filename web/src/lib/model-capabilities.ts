@@ -212,7 +212,13 @@ export function defaultImageCapabilityConfig(protocol?: ModelProtocol, model = "
         outputFormat: { supported: true },
         maxOutputs: 15,
     };
-    if (protocol === "grok-image") {
+    if (protocol === "qwen-image-2-1") {
+        // Qwen-Image-2.1 私有服务支持原生透明 PNG，参考图走 ref_images，单次只生成一张。
+        image.references.maxImages = 10;
+        image.references.maskSupported = false;
+        image.quality = { supported: false, values: [], default: "auto" };
+        image.maxOutputs = 1;
+    } else if (protocol === "grok-image") {
         image.references.maxImages = 1;
         image.references.maskSupported = false;
         // grok2api / xAI Imagine：size→aspect_ratio，quality→resolution(1k/2k)。

@@ -1,0 +1,19 @@
+/**
+ * 作品集工作台样式。
+ *
+ * 只用少量无法用原子类表达的规则：画布容器需要一张低对比网格底纹来提示"这是一块
+ * 可缩放的工作区"，以及导入等待时的骨架背景。
+ */
+
+.portfolio-stage {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    background-color: var(--muted);
+    background-image: linear-gradient(to right, color-mix(in oklab, var(--foreground) 6%, transparent) 1px, transparent 1px), linear-gradient(to bottom, color-mix(in oklab, var(--foreground) 6%, transparent) 1px, transparent 1px);
+    background-size: 24px 24px;
+}
+
+.portfolio-stage:focus-visible {
+    outline: none;
+}

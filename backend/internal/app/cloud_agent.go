@@ -346,6 +346,13 @@ func (s *Service) CreateCloudAgentRun(userID string, req CloudAgentRequest, pare
 	if userID == "" {
 		return nil, kernel.Unauthorized("请先登录")
 	}
+	// 作品集用 "pf-<文档ID>" 派生壳画布作为运行身份。壳画布按需创建：它只是 canvasId
+	// 契约（存在性 + 归属 + 缓存键）的载体，作品集内容仍由作品集文档承载。
+	if documentID := cloudAgentPortfolioDocumentID(req.CanvasID); documentID != "" {
+		if err := s.ensureCloudAgentPortfolioShell(userID, documentID); err != nil {
+			return nil, err
+		}
+	}
 	canvas, err := s.repo.CanvasProjectForUser(userID, req.CanvasID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {

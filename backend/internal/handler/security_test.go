@@ -29,6 +29,17 @@ func TestAuthorizeSystemProxyAllowsConfiguredGenerationModel(t *testing.T) {
 	}
 }
 
+func TestAuthorizeSystemProxyAllowsQwenImageOriginPath(t *testing.T) {
+	channel := &model.ModelChannel{APIFormat: "openai", ModelsJSON: `["qwen_image_2.1"]`}
+	body := []byte(`{"model":"qwen_image_2.1","prompt":"test","output_format":"png"}`)
+	if err := authorizeSystemProxy(channel, model.ChannelInterfaceQwenImage21, http.MethodPost, "/v1/images/generations", "application/json", body); err != nil {
+		t.Fatalf("authorizeSystemProxy() error = %v", err)
+	}
+	if err := authorizeSystemProxy(channel, model.ChannelInterfaceQwenImage21, http.MethodPost, "/v1/images/edits", "application/json", body); err == nil {
+		t.Fatal("expected Qwen image edits path to be rejected")
+	}
+}
+
 func TestAuthorizeSystemProxyAllowsGrokImageJSONEdits(t *testing.T) {
 	channel := &model.ModelChannel{APIFormat: "openai", ModelsJSON: `["grok-imagine-image"]`}
 	body := []byte(`{"model":"grok-imagine-image","prompt":"edit"}`)

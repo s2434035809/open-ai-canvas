@@ -1941,6 +1941,13 @@ func (s *Service) advanceCloudAgentTool(run *model.CloudAgentExecution, state *c
 			return s.failCloudAgent(run, state, cloudAgentImageInspectionBudgetMessage)
 		}
 	}
+	// 作品集看图与画布看图共用同一套每轮视觉预算，也在写事务外完成资源校验。
+	if allowed && call.Function.Name == "portfolio_inspect_image" && state.Request.VisionEnabled {
+		inspectionResult, inspectionErr = s.prepareCloudAgentPortfolioInspection(run.UserID, state, call)
+		if errors.Is(inspectionErr, errCloudAgentImageInspectionBudget) {
+			return s.failCloudAgent(run, state, cloudAgentImageInspectionBudgetMessage)
+		}
+	}
 	// Skill reads use the domain repository and filesystem, not the checkpoint
 	// transaction's connection. Read first to avoid nesting DB reads on SQLite.
 	var skillResult any
@@ -1991,6 +1998,22 @@ func (s *Service) advanceCloudAgentTool(run *model.CloudAgentExecution, state *c
 					}
 				}
 			}
+		case call.Function.Name == "portfolio_inspect_image":
+			result, toolErr = inspectionResult, inspectionErr
+			if toolErr == nil && inspectionResult != nil {
+				if inspection, ok := inspectionResult.(cloudAgentImageInspection); ok {
+					state.markCanvasImageInspection(stringValue(inspection.Receipt["elementId"]), strings.TrimSpace(inspection.ImageURL) != "")
+					if inspection.CacheKey != "" {
+						if state.ImageInspectionReads == nil {
+							state.ImageInspectionReads = map[string]int{}
+						}
+						state.ImageInspectionReads[inspection.CacheKey]++
+					}
+				}
+			}
+		case call.Function.Name == "portfolio_propose_annotations":
+			// 只登记建议：作品集文档在这一步没有被修改，写入等用户在界面上确认。
+			result, toolErr = proposeCloudAgentPortfolioAnnotations(repo, run.UserID, state, run.ID, call)
 		case call.Function.Name == "skill_read_file", call.Function.Name == "model_list", call.Function.Name == "image_annotation_render":
 			result, toolErr = skillResult, skillErr
 		default:
