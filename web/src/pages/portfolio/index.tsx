@@ -341,8 +341,11 @@ export default function PortfolioStudioPage() {
             return;
         }
         store.applyElementPatches(patches);
+        // 面板承诺的是「确认后写入作品集」，所以这里必须落库。只改本地状态会让用户
+        // 看到「已写入」却什么都没保存，刷新即丢。
+        void save();
         void message.success(`已写入 ${patches.size} 张图片的分类与图注`);
-    }, [message, reviewItems]);
+    }, [message, reviewItems, save]);
 
     const classifyDisabled = !currentPage || currentPage.elements.every((element) => element.kind !== "image");
 
