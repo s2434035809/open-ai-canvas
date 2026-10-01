@@ -84,13 +84,21 @@ func Run(ctx context.Context, request ProcessRequest, bridge Bridge) error {
 	if err != nil {
 		return fmt.Errorf("encode Agent runtime request: %w", err)
 	}
+	homeDir, err := os.MkdirTemp("", "canvas-agent-home-")
+	if err != nil {
+		return fmt.Errorf("create Agent runtime home directory: %w", err)
+	}
+	defer os.RemoveAll(homeDir)
 	cmd := exec.CommandContext(ctx, "node", "--max-old-space-size="+nodeMemoryMB(), filepath.Join(runtimeDir, "agent-runtime.mjs"))
 	cmd.Dir = runtimeDir
 	cmd.Stdin = strings.NewReader(string(payload))
-	// 环境变量白名单：只传 Node 运行所需的最少变量。HOME 与会话、工作目录
-	// 由运行时自己建的临时隔离目录提供，不使用服务端数据目录。
+	// 环境变量白名单：只传 Node 运行所需的最少变量。HOME 必须带上——pi SDK 在
+	// import 阶段就会调用 homedir() 定位 agent 配置目录；容器内进程用户若不在
+	// /etc/passwd 且缺少 HOME，uv_os_homedir 直接 ENOENT 导致 runtime 起不来。
+	// 这里给每轮运行一个独立空目录，运行结束即删；运行时还会再切到自己的隔离目录。
 	cmd.Env = []string{
 		"PATH=" + os.Getenv("PATH"),
+		"HOME=" + homeDir,
 		"NODE_ENV=production",
 		"PI_OFFLINE=1",
 	}
