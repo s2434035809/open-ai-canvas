@@ -7,10 +7,10 @@ import { CanvasNodeType, type CanvasConnection, type CanvasGenerationMode, type 
 import { getGenerationResourceNodes, getContextResourceNodes, getMentionResourceNodes } from "@/lib/canvas/canvas-resource-references";
 import { canvasNodeVideoPreviewUrl, canvasVideoAssetPreviewUrl } from "@/lib/canvas/canvas-media-preview";
 import { isNeutralColorGrade, resolveCanvasColorGradeReference } from "@/lib/canvas/canvas-color-grade";
-import { getNodeResourceKind } from "@/lib/canvas/node-registry";
+import { getNodeGenerationMode, getNodeResourceKind } from "@/lib/canvas/node-registry";
 import { mediaConversionSourceFingerprint } from "@/lib/media-conversion/contracts";
 import { resolveCanvasDrawingReference } from "@/lib/canvas/canvas-drawing-reference";
-import { compileCharacterReferencePrompt } from "@/lib/canvas/canvas-character-reference";
+import { compileCharacterReferencePrompt, normalizeCharacterImageMentions } from "@/lib/canvas/canvas-character-reference";
 import { nodeReferenceImage } from "@/lib/canvas/canvas-project-generation";
 import { isCanvasWorkflowProvider } from "@/lib/canvas/canvas-workflow";
 import { audioFileExtension } from "@/lib/character-voice-formats";
@@ -87,8 +87,10 @@ export function buildNodeGenerationContext(nodeId: string, nodes: CanvasNodeData
     const hasExplicitResourceMention = hasResolvableGenerationMention(prompt, mentionInputs);
     const isWorkflowSource = sourceNode?.type === CanvasNodeType.Config && isCanvasWorkflowProvider(sourceNode.metadata);
     const hasConnectedMedia = connectedInputs.some((input) => input.type === "image" || input.type === "video" || input.type === "audio" || input.type === "character");
+    // 豆包音频按连线决定纯文本、参考音频或参考图片，不能因为提示词里没有逐个 @ 就丢掉已连接素材。
+    const includeConnectedAudioMedia = Boolean(sourceNode && getNodeGenerationMode(sourceNode) === "audio");
     if ((promptOnly && hasConnectedMedia) || (Boolean(sourceNode?.metadata?.composerContent?.trim()) && (sourceNode?.type === CanvasNodeType.Config || isWorkflowSource)) || hasExplicitResourceMention) {
-        const autoIncludeWorkflowMedia = isWorkflowSource;
+        const autoIncludeWorkflowMedia = isWorkflowSource || includeConnectedAudioMedia;
         return buildComposerGenerationContext(
             mentionInputs,
             prompt,
@@ -301,11 +303,13 @@ export function generationInputMentionLabel(input: NodeGenerationInput, inputs: 
 }
 
 export function normalizeGenerationNodeMentionTokens(prompt: string, inputs: NodeGenerationInput[]) {
-    const labelByNodeId = new Map(generationSlotEntries(inputs).map(({ input, label }) => [input.nodeId, label]));
-    return prompt.replace(/@\[node:([^\]]+)\]/g, (token, nodeId: string) => {
+    const slots = generationSlotEntries(inputs);
+    const labelByNodeId = new Map(slots.map(({ input, label }) => [input.nodeId, label]));
+    const normalized = prompt.replace(/@\[node:([^\]]+)\]/g, (token, nodeId: string) => {
         const label = labelByNodeId.get(nodeId);
         return label ? `@${label}` : token;
     });
+    return normalizeCharacterImageMentions(normalized, slots.filter(({ input }) => input.type === "image").length, slots.filter(({ input }) => input.type === "character").map(({ label }) => label));
 }
 
 function hasResolvableGenerationMention(prompt: string, inputs: NodeGenerationInput[]) {
@@ -491,10 +495,9 @@ export async function hydrateNodeGenerationContext(context: NodeGenerationContex
         }),
     );
     if (!context.characterReferences.length) return { ...context, referenceImages };
-    if (!domainProjectId) throw new Error("角色引用未关联短剧项目，无法解析角色版本");
-    const { getProjectCharacter } = await import("@/services/api/projects");
+    const { getCharacter } = await import("@/services/api/projects");
     const { getResource, resourceFileUrl, resourceIdFromStorageKey, resourceStorageKey } = await import("@/services/api/resources");
-    const details = await Promise.all(context.characterReferences.map((reference) => getProjectCharacter(domainProjectId, reference.assetId)));
+    const details = await Promise.all(context.characterReferences.map((reference) => getCharacter(reference.assetId)));
     const remainingBudget = Math.max(0, (referenceLimits?.maxImages ?? 9) - referenceImages.length);
     const selected = details.flatMap((detail) => {
         const representation = preferredCharacterRepresentation(detail.character.representations);

@@ -167,8 +167,8 @@ func applyCloudAgentCanvasPlan(doc map[string]any, ops []agentCanvasOp) ([]cloud
 					return nil, BadAuthRequest("连线重复")
 				}
 			}
-			fromCapability, _ := cloudAgentNodeCapabilityForType(stringValue(nodes[fromIndex]["type"]))
-			toCapability, _ := cloudAgentNodeCapabilityForType(stringValue(nodes[toIndex]["type"]))
+			fromCapability, _ := cloudAgentNodeCapabilityForNode(nodes[fromIndex])
+			toCapability, _ := cloudAgentNodeCapabilityForNode(nodes[toIndex])
 			fromTitle := cloudAgentApprovalNodeTitle(nodes[fromIndex], fromCapability.Label)
 			toTitle := cloudAgentApprovalNodeTitle(nodes[toIndex], toCapability.Label)
 			edges = append(edges, map[string]any{"id": op.ID, "fromNodeId": op.FromNodeID, "toNodeId": op.ToNodeID})
@@ -188,7 +188,7 @@ func applyCloudAgentCanvasPlan(doc map[string]any, ops []agentCanvasOp) ([]cloud
 			if index < 0 {
 				return nil, BadAuthRequest("只能更新现有且受 Agent 支持的节点")
 			}
-			capability, ok := cloudAgentNodeCapabilityForType(stringValue(nodes[index]["type"]))
+			capability, ok := cloudAgentNodeCapabilityForNode(nodes[index])
 			if !ok || !capability.CanUpdate {
 				return nil, BadAuthRequest("该节点类型不支持 Agent 更新")
 			}
@@ -257,6 +257,9 @@ func cloudAgentMediaApprovalPreview(plan *cloudAgentMediaPlan, modelName string)
 		details = append(details, fmt.Sprintf("引用 %d 个画布资产并建立连线", len(args.ReferenceNodeIDs)))
 	} else {
 		details = append(details, "不引用画布媒体资产")
+	}
+	if len(args.CharacterLabels) > 0 {
+		details = append(details, "使用角色卡："+truncateRunes(strings.Join(args.CharacterLabels, "、"), 200))
 	}
 	if args.Duration > 0 {
 		details = append(details, fmt.Sprintf("时长：%d 秒", args.Duration))

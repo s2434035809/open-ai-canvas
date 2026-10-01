@@ -619,9 +619,13 @@ const (
 func cloudAgentCanvasSummary(canvas *model.CanvasProject, focusNodeIDs ...string) (string, error) {
 	var payload struct {
 		Nodes []struct {
-			ID    string `json:"id"`
-			Type  string `json:"type"`
-			Title string `json:"title"`
+			ID       string `json:"id"`
+			Type     string `json:"type"`
+			Title    string `json:"title"`
+			Metadata struct {
+				WorkflowKind     string `json:"workflowKind"`
+				CharacterAssetID string `json:"characterAssetId"`
+			} `json:"metadata"`
 		} `json:"nodes"`
 		Connections []struct {
 			FromNodeID string `json:"fromNodeId"`
@@ -666,9 +670,13 @@ func cloudAgentCanvasSummary(canvas *model.CanvasProject, focusNodeIDs ...string
 		}
 	}
 	candidates := make([]struct {
-		ID    string `json:"id"`
-		Type  string `json:"type"`
-		Title string `json:"title"`
+		ID       string `json:"id"`
+		Type     string `json:"type"`
+		Title    string `json:"title"`
+		Metadata struct {
+			WorkflowKind     string `json:"workflowKind"`
+			CharacterAssetID string `json:"characterAssetId"`
+		} `json:"metadata"`
 	}, 0, len(payload.Nodes))
 	if len(focus) > 0 {
 		// Always retain explicitly selected nodes before neighbors when a highly
@@ -692,7 +700,10 @@ func cloudAgentCanvasSummary(canvas *model.CanvasProject, focusNodeIDs ...string
 			break
 		}
 		item := map[string]any{"id": truncateRunes(node.ID, 100), "type": truncateRunes(node.Type, 40), "title": truncateRunes(node.Title, 80)}
-		if _, known := cloudAgentNodeCapabilityForType(node.Type); !known {
+		if node.Type == "text" && node.Metadata.WorkflowKind == "character" {
+			item["kind"] = "character"
+		}
+		if _, known := canvasCapabilityRegistry.ResolveNode(node.Type, node.Metadata.WorkflowKind); !known {
 			item["agentSupported"] = false
 		}
 		nodes = append(nodes, item)

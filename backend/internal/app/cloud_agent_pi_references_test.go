@@ -88,26 +88,28 @@ func canonicalMessageImageURL(t *testing.T, canonical canonicalAgentRequest, ind
 	return ""
 }
 
-// AST 守卫：Pi 运行时的模型步骤必须登记参考图白名单。
+// AST 守卫：轮内每步的模型上下文准备必须登记参考图白名单。
 //
 // playbook 里"canonical 里的 resource: 占位符要有白名单"这条约束没有类型系统兜底，
 // 漏掉只会让真实运行失败，因此这里直接读源码断言调用点还在。
-func TestCloudAgentPiModelStepRegistersImageReferences(t *testing.T) {
-	file, err := parser.ParseFile(token.NewFileSet(), "cloud_agent_pi_coordinator.go", nil, 0)
+// 上游把 Pi 运行时拆到 cloud_agent_pi_model.go 后，登记点统一挪到了 advanceCloudAgent
+// （cloud_agent_runtime_scheduler.go）的建模步骤，守卫跟着挪。
+func TestCloudAgentModelStepRegistersImageReferences(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "cloud_agent_runtime_scheduler.go", nil, 0)
 	if err != nil {
-		t.Fatalf("解析 cloud_agent_pi_coordinator.go 失败：%v", err)
+		t.Fatalf("解析 cloud_agent_runtime_scheduler.go 失败：%v", err)
 	}
 	var body *ast.BlockStmt
 	ast.Inspect(file, func(node ast.Node) bool {
 		decl, ok := node.(*ast.FuncDecl)
-		if !ok || decl.Name.Name != "runCloudAgentModelStep" || decl.Body == nil {
+		if !ok || decl.Name.Name != "advanceCloudAgent" || decl.Body == nil {
 			return true
 		}
 		body = decl.Body
 		return false
 	})
 	if body == nil {
-		t.Fatal("找不到 runCloudAgentModelStep：实现被重命名或搬走了，守卫需要同步更新")
+		t.Fatal("找不到 advanceCloudAgent：实现被重命名或搬走了，守卫需要同步更新")
 	}
 
 	called, wired := false, false
@@ -125,9 +127,9 @@ func TestCloudAgentPiModelStepRegistersImageReferences(t *testing.T) {
 		return true
 	})
 	if !called {
-		t.Fatal("runCloudAgentModelStep 没有调用 cloudAgentImageReferences：Pi 路径会丢掉参考图白名单")
+		t.Fatal("advanceCloudAgent 没有调用 cloudAgentImageReferences：模型步骤会丢掉参考图白名单")
 	}
 	if !wired {
-		t.Fatal("runCloudAgentModelStep 没有把参考图写进 input 的 referenceImages：白名单等于没登记")
+		t.Fatal("advanceCloudAgent 没有把参考图写进 input 的 referenceImages：白名单等于没登记")
 	}
 }
