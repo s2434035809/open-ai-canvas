@@ -2896,3 +2896,36 @@ SSE 现在按 revision 变化发送紧凑快照，无变化只 heartbeat；客�
 仍待真实环境验收：
 
 - [ ] 在管理员后台存储资源页分别输入完整/部分用户名、昵称、邮箱和用户 ID，确认返回同一用户资源；再叠加类型、状态和存储位置筛选，确认分页与清空筛选正常。
+
+## 拉取上游合并后重新测试（feature/portfolio-design）
+
+- 时间：2026-10-01 19:58（本地）
+- 分支：`feature/portfolio-design`
+- 基线：`4038ec66`（wip 快照）→ 合并 `upstream/main@f5d755f2`
+- 合并提交：`426c5997`
+
+### 冲突解决
+
+- 上游把云 Agent 拆分进 `cloud_agent_runtime_*.go`、`cloud_agent_pi_*.go`、`model_capability_defaults.go` 等模块文件，
+  本地旧版同名实现已丢弃，保留上游最新（含孤儿任务接管 42f14cd7、thinking_mode 默认关闭、
+  画布 character-card / variant / capability-for-node / 技能目录白名单等新特性）。
+- 本地独有改动移植到上游新模块：`advanceCloudAgentTool` 的 portfolio_* 三工具分支、
+  `cloudAgentReadTool` 的 `portfolio_read_document` 路由与 readonly 列表、
+  Extra map 的 `transparentBackground`、Qwen-Image-2.1 渠道默认值。
+- 守卫测试 `TestCloudAgentPiModelStepRegistersImageReferences` 随登记点迁移更名为
+  `TestCloudAgentModelStepRegistersImageReferences`（解析 `advanceCloudAgent`）。
+
+### 验证结果
+
+- 后端 `go build ./...`、`go test ./...`（dev 容器）通过；
+  5 个 Live 环境测试（ToolRoundTrip / ApprovalWriteRoundTrip / LiveRecallLessons /
+  LiveRetriesTransient / LiveDoesNotRetryRejected）在纯上游对照容器中同样失败，判定为容器环境问题，
+  与合并无关。
+- 前端 `bun test` 2180 通过、9 失败；9 个失败全部集中在 `test/ci-formatting.test.mjs`
+  （git fixture 环境问题），纯上游对照同样 0 pass 9 fail，判定与合并无关。
+- 前端 `bun run build` 通过。
+- dev 容器 `air` 已热重载合并后代码，`backend listening` 正常。
+
+### 待人工冒烟
+
+- 作品集 Agent 面板与画布缩略图的交互复测（pending-test 第 1、2、5 项）留待浏览器验证。
