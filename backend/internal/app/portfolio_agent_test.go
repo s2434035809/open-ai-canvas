@@ -24,15 +24,15 @@ func portfolioAgentFixture(t *testing.T) (*Service, *gorm.DB) {
 			{
 				"id": "page-1", "name": "封面", "width": 1600.0, "height": 1000.0, "background": "#ffffff",
 				"elements": []map[string]any{
-					{"id": "img-1", "kind": "image", "assetId": "asset-1", "src": "", "caption": "", "tags": []string{}, "naturalWidth": 1200.0, "naturalHeight": 800.0},
-					{"id": "img-2", "kind": "image", "assetId": "", "src": "https://example.invalid/two.png", "caption": "已有图注", "tags": []string{"人像"}, "naturalWidth": 900.0, "naturalHeight": 600.0},
-					{"id": "text-1", "kind": "text", "text": "章节标题"},
+					{"id": "img-1", "kind": "image", "assetId": "asset-1", "src": "", "x": 80.0, "y": 120.0, "width": 640.0, "height": 480.0, "caption": "", "tags": []string{}, "naturalWidth": 1200.0, "naturalHeight": 800.0},
+					{"id": "img-2", "kind": "image", "assetId": "", "src": "https://example.invalid/two.png", "x": 800.0, "y": 300.0, "width": 600.0, "height": 400.0, "caption": "已有图注", "tags": []string{"人像"}, "naturalWidth": 900.0, "naturalHeight": 600.0},
+					{"id": "text-1", "kind": "text", "x": 80.0, "y": 60.0, "width": 300.0, "height": 60.0, "text": "章节标题", "fontSize": 48.0},
 				},
 			},
 			{
 				"id": "page-2", "name": "作品", "width": 1600.0, "height": 1000.0, "background": "#ffffff",
 				"elements": []map[string]any{
-					{"id": "img-3", "kind": "image", "assetId": "asset-other", "src": "", "caption": "", "tags": []string{}, "naturalWidth": 800.0, "naturalHeight": 800.0},
+					{"id": "img-3", "kind": "image", "assetId": "asset-other", "src": "", "x": 80.0, "y": 80.0, "width": 400.0, "height": 400.0, "caption": "", "tags": []string{}, "naturalWidth": 800.0, "naturalHeight": 800.0},
 				},
 			},
 		},
@@ -88,7 +88,7 @@ func TestPortfolioAgentToolsFollowShellCanvas(t *testing.T) {
 		function, _ := tool["function"].(map[string]any)
 		names[stringValue(function["name"])] = true
 	}
-	for _, want := range []string{"portfolio_read_document", "portfolio_propose_annotations", "portfolio_inspect_image"} {
+	for _, want := range []string{"portfolio_read_document", "portfolio_propose_annotations", "portfolio_propose_layouts", "portfolio_inspect_image"} {
 		if !names[want] {
 			t.Fatalf("作品集壳画布缺少工具 %s（当前：%v）", want, names)
 		}
@@ -287,5 +287,111 @@ func TestPortfolioAgentEnsureShellCanvas(t *testing.T) {
 	}
 	if err := s.ensureCloudAgentPortfolioShell("other", "doc-1"); err == nil {
 		t.Fatal("跨用户不应创建壳画布")
+	}
+}
+
+func portfolioAgentLayoutCall(t *testing.T, pageID string, options ...map[string]any) cloudAgentCall {
+	t.Helper()
+	return portfolioAgentCall(t, "portfolio_propose_layouts", "layout-1", map[string]any{"pageId": pageID, "options": options})
+}
+
+func TestPortfolioAgentProposeLayouts(t *testing.T) {
+	s, db := portfolioAgentFixture(t)
+	state := cloudAgentRuntime{Request: portfolioAgentRequest()}
+
+	// 两个可区分的方案：一个移动既有元素并新增主标，一个只做既有元素的位置调整。
+	f := func(value float64) *float64 { return &value }
+	result, err := proposeCloudAgentPortfolioLayouts(s.repo, "user", &state, "run-1", portfolioAgentLayoutCall(t, "page-1",
+		map[string]any{
+			"name": "瑞士双栏", "reason": "左图右文，主标压版", "title": "城市漫游",
+			"elements": []map[string]any{
+				{"elementId": "img-1", "x": f(80), "y": f(120), "width": f(640), "height": f(480)},
+				{"kind": "text", "text": "城市漫游", "role": "title", "x": f(80), "y": f(60), "width": f(400), "height": f(90), "fontSize": f(64), "align": "left", "color": "#1f2328"},
+			},
+		},
+		map[string]any{
+			"name": "杂志通栏", "reason": "整图出血，图注压边",
+			"elements": []map[string]any{
+				{"elementId": "img-2", "x": f(600), "y": f(400), "width": f(900), "height": f(560), "caption": "海边人像", "tags": []string{"人像"}},
+			},
+		},
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, _ := result.(map[string]any)
+	if payload["acceptedCount"] != 2 {
+		t.Fatalf("应接受两个方案：%v", payload)
+	}
+	if len(state.Events) != 1 || state.Events[0].Type != "portfolio_layouts_proposed" {
+		t.Fatalf("方案应登记为事件：%v", state.Events)
+	}
+	// 事件载荷：既有元素带最终盒子，新增文本带归一化样式。
+	options, _ := state.Events[0].Payload["options"].([]map[string]any)
+	if len(options) != 2 || options[0]["name"] != "瑞士双栏" || options[0]["title"] != "城市漫游" {
+		t.Fatalf("事件载荷不正确：%v", options)
+	}
+	items, _ := options[0]["elements"].([]map[string]any)
+	if len(items) != 2 || items[0]["elementId"] != "img-1" || items[0]["x"] != float64(80) {
+		t.Fatalf("既有元素载荷不正确：%v", items[0])
+	}
+	if items[1]["kind"] != "text" || items[1]["role"] != "title" || items[1]["text"] != "城市漫游" {
+		t.Fatalf("新增文本载荷不正确：%v", items[1])
+	}
+	// 提议不等于写入：文档原封不动。
+	var stored model.PortfolioDocument
+	if err := db.First(&stored, "id = ?", "doc-1").Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.Revision != 3 {
+		t.Fatalf("版式登记不应改动文档版本：%d", stored.Revision)
+	}
+}
+
+func TestPortfolioAgentProposeLayoutsRejects(t *testing.T) {
+	s, _ := portfolioAgentFixture(t)
+	state := cloudAgentRuntime{Request: portfolioAgentRequest()}
+	f := func(value float64) *float64 { return &value }
+
+	// 越界坐标。
+	if _, err := proposeCloudAgentPortfolioLayouts(s.repo, "user", &state, "run-1", portfolioAgentLayoutCall(t, "page-1",
+		map[string]any{"name": "A", "reason": "越界", "elements": []map[string]any{{"elementId": "img-1", "x": f(1200), "y": f(900), "width": f(600), "height": f(200)}}},
+		map[string]any{"name": "B", "reason": "合法", "elements": []map[string]any{{"elementId": "img-2", "x": f(100), "y": f(100)}}},
+	)); err != nil {
+		t.Fatalf("部分方案非法时不该整批失败：%v", err)
+	}
+	if len(state.Events) != 1 {
+		t.Fatalf("合法方案仍应登记：%v", state.Events)
+	}
+	options, _ := state.Events[0].Payload["options"].([]map[string]any)
+	if len(options) != 1 || options[0]["name"] != "B" {
+		t.Fatalf("越界方案应被剔除：%v", options)
+	}
+
+	// 全部非法：未知元素 + 重复方案名 + 元素数越上限。
+	state2 := cloudAgentRuntime{Request: portfolioAgentRequest()}
+	tooMany := make([]map[string]any, 0, 25)
+	for i := 0; i < 25; i++ {
+		tooMany = append(tooMany, map[string]any{"elementId": "img-1"})
+	}
+	_, err := proposeCloudAgentPortfolioLayouts(s.repo, "user", &state2, "run-1", portfolioAgentLayoutCall(t, "page-1",
+		map[string]any{"name": "坏", "reason": "引用不存在的元素", "elements": []map[string]any{{"elementId": "img-404"}}},
+		map[string]any{"name": "坏", "reason": "重复名", "elements": []map[string]any{{"elementId": "img-1", "x": f(0), "y": f(0), "width": f(100), "height": f(100)}}},
+		map[string]any{"name": "多", "reason": "元素数越上限", "elements": tooMany},
+	))
+	if err == nil {
+		t.Fatal("全部方案非法时应返回错误")
+	}
+	if len(state2.Events) != 0 {
+		t.Fatalf("全部非法时不应登记事件：%v", state2.Events)
+	}
+
+	// 页面不存在。
+	state3 := cloudAgentRuntime{Request: portfolioAgentRequest()}
+	if _, err := proposeCloudAgentPortfolioLayouts(s.repo, "user", &state3, "run-1", portfolioAgentLayoutCall(t, "page-404",
+		map[string]any{"name": "A", "reason": "x", "elements": []map[string]any{{"kind": "text", "text": "主标", "x": f(10), "y": f(10), "width": f(100), "height": f(40)}}},
+		map[string]any{"name": "B", "reason": "y", "elements": []map[string]any{{"kind": "text", "text": "图注", "x": f(10), "y": f(60), "width": f(100), "height": f(20)}}},
+	)); err == nil {
+		t.Fatal("不存在的页面应被拒绝")
 	}
 }

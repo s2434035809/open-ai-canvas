@@ -39,9 +39,10 @@ body{padding:28px 16px 56px;background:#f1f5f9;color:#1f2328;font-family:Inter,s
 .pf-page{position:relative;transform-origin:top left;overflow:hidden;box-shadow:0 12px 32px rgba(15,23,42,.14)}
 .pf-el{position:absolute;margin:0;transform-origin:center center}
 .pf-img{display:block;width:100%;height:100%}
-.pf-caption{position:absolute;left:0;right:0;bottom:0;display:flex;align-items:center;color:#fff;background:rgba(15,23,42,.62);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:0 12px}
+.pf-caption{position:relative;display:block;margin-top:6px;color:#475569;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-weight:500;letter-spacing:.03em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .pf-text{white-space:pre-wrap;word-break:break-all;overflow:visible}
-.pf-foot{color:#64748b;font-size:12px}`;
+.pf-foot{color:#94a3b8;font-size:10px;letter-spacing:.14em;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.pf-pageno{position:absolute;top:10px;right:14px;z-index:9999;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:10px;letter-spacing:.18em;color:rgba(15,23,42,.45)}`;
 
 /** HTML 转义；所有来自文档的字符串都要经过它。 */
 export function escapeHtml(value: string): string {
@@ -79,7 +80,7 @@ function renderImageElement(element: PortfolioImageElement, assets: PortfolioAss
 
     const barHeight = captionBarHeight(element.height);
     const fontSize = captionFontSize(barHeight);
-    return `<figure class="pf-el" style="${elementBoxStyle(element)}">${image}<figcaption class="pf-caption" style="height:${cssPx(barHeight)};font-size:${cssPx(fontSize)}">${escapeHtml(caption)}</figcaption></figure>`;
+    return `<figure class="pf-el" style="${elementBoxStyle(element)}">${image}<figcaption class="pf-caption" style="font-size:${cssPx(fontSize)}">${escapeHtml(caption)}</figcaption></figure>`;
 }
 
 function renderTextElement(element: PortfolioTextElement): string {
@@ -97,14 +98,16 @@ function renderTextElement(element: PortfolioTextElement): string {
     return `<div class="pf-el pf-text" style="${style}">${escapeHtml(element.text)}</div>`;
 }
 
-function renderPageHtml(page: PortfolioPage, assets: PortfolioAssetBundle, options: PortfolioExportOptions, index: number): string {
+function renderPageHtml(page: PortfolioPage, assets: PortfolioAssetBundle, options: PortfolioExportOptions, index: number, pageCount: number): string {
     const elements = sortByZIndex(page.elements)
         .map((element) => (element.kind === "image" ? renderImageElement(element, assets, options) : renderTextElement(element)))
         .join("\n      ");
     const size = `width:${cssPx(page.width)};height:${cssPx(page.height)};background:${page.background || "#ffffff"}`;
+    // 页码微标签：右上角等宽小字，Stitch 式的印刷台账感；不影响任何元素几何。
+    const pageNumber = pageCount > 1 ? `      <span class="pf-pageno">${String(index + 1).padStart(2, "0")} / ${String(pageCount).padStart(2, "0")}</span>\n` : "";
     return `  <div class="pf-frame" data-w="${cssNumber(page.width)}" data-h="${cssNumber(page.height)}" style="width:${cssPx(page.width)};height:${cssPx(page.height)}">
     <section class="pf-page" aria-label="${escapeHtml(page.name || `第 ${index + 1} 页`)}" style="${size}">
-      ${elements}
+${pageNumber}      ${elements}
     </section>
   </div>`;
 }
@@ -116,7 +119,7 @@ export function renderPortfolioHtml(input: PortfolioHtmlInput): string {
     const { pages, title, description, assets, options } = input;
     const generatedAt = input.generatedAt ?? new Date();
     const stamp = `${generatedAt.getFullYear()}-${String(generatedAt.getMonth() + 1).padStart(2, "0")}-${String(generatedAt.getDate()).padStart(2, "0")}`;
-    const pageHtml = pages.map((page, index) => renderPageHtml(page, assets, options, index)).join("\n");
+    const pageHtml = pages.map((page, index) => renderPageHtml(page, assets, options, index, pages.length)).join("\n");
 
     return `<!DOCTYPE html>
 <html lang="zh-CN">

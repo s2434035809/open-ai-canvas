@@ -2825,3 +2825,29 @@ SSE 现在按 revision 变化发送紧凑快照，无变化只 heartbeat；客�
 
 - 已修复：`cmd/migrate-sqlite-postgres` 的 `migrations()` 表清单遗漏作品集新表 `portfolio_documents`，导致 `TestMigrationListCoversSchemaModels` 失败；已在清单末尾补 `migrateTable[model.PortfolioDocument]("portfolio_documents")`，全量 `go test ./...` 通过（28 包 ok，dev 容器内执行）。
 - [ ] 改动位于 `feature/AI-Portfolio` 工作区、尚未提交，需用户确认提交；SQLite→PostgreSQL 迁移场景建议备份后跑一次 `migrate-sqlite-postgres` 冒烟验证（结构覆盖已由单测保证，非阻塞）。
+
+## 作品集版式方案 portfolio_propose_layouts（2026-09-30）
+
+本轮给作品集 Agent 增加「主标定版式」步骤：模型对单页组织多个可选版式（每页 2~4 个方案），界面以缩略图卡片呈现，用户选定才写入文档，可再自动推进下一页。
+
+- 已实现（后端）：`portfolio_propose_layouts` 工具（`backend/internal/app/portfolio_agent.go`）——`pageId` 必填且必须存在于目标页面；方案名去重（含已拒绝项）；元素级强校验（未知 `elementId` / 缺 text / 缺坐标 / 越界 / 无改动均带理由剔除），整批全非法返回 400，合法项照常登记；事件 `portfolio_layouts_proposed {documentId, revision, pageId, options[]}`；不直接改文档。注册与分派见 `cloud_agent_tools.go` / `cloud_agent_runtime.go`，`TestCloudAgentToolTableMatchesRuntimeDispatch` 守卫通过。
+- 已实现（前端）：`agent-run.ts` 版式方案解析与按 `pageId` 收窄、`store.ts` `applyLayoutChanges`（补丁 + 新增文本元素，每次应用独立一条撤销记录）、新组件 `portfolio-layout-thumbnail.tsx`（离屏 canvas 缩略图，图片 4 秒未加载画灰块）、`portfolio-agent-panel.tsx` LAYOUT OPTIONS 卡片与「继续下一步」、`pages/portfolio/index.tsx` 应用时切回方案出生页 → 写入落库 → 自动翻页、指令再生成。
+- 已实现（视觉）：画布点阵网格 + 页面浮影（5,7 偏移）、inspector 等宽 kicker、侧栏 `PAGES · 0N`、HTML 导出多页右上角 `01 / 04` 页码微标签；PNG 导出有意未动，避免像素回归。
+- [x] 后端：dev 容器内全量 `go test ./...` 绿（含 `TestPortfolioAgentProposeLayouts` / `...Rejects` 与工具表守卫）；air 已热重建生效。
+- [x] 前端：`bun run typecheck`、`bun run build` 通过；`bun test` 2149 过 / 9 败——9 个失败全部为既有 `ci-formatting` 环境故障（web 容器未安装 git），与本轮无关；改动文件中 4 个在 HEAD 基线即不过 prettier（legacy，CI 门跳过），新缩略图组件文件干净。
+- [x] 接口级 E2E（13000 开发栈）：`canvasId=pf-5ac1b720a9b36f69b022d0a60a14b40f` + `agnes-3.0-flash` 提交运行 `ag141a41707d27108b31aae023ecae1fd4`，结果 completed：`portfolio_read_document` OK、`portfolio_inspect_image` ×3 OK、`portfolio_propose_layouts` OK（3 个可区分方案：瑞士双栏 / 杂志通栏 / 对称双页，主标均为「光影集 · 精选」，坐标全部落在 1600×1000 内）、`portfolio_propose_annotations` OK；文档未被写工具改动（方案仅登记）。
+- 备注：dev 实例登录密码 `akai77-dev-2026` 已失效（401）；本次 E2E 按仓库既有先例在 dev sqlite（`.local/project-workbench-debug/open_ai_canvas.db`）插入临时 `auth_sessions` 行完成调用，**该临时会话已于验证后删除**。
+- [ ] UI 点击路径人工验收未做（本环境浏览器无 13000 登录态）：登录 13000 → `/plugins/portfolio` → 右栏 Agent 运行 → LAYOUT OPTIONS 卡片（缩略图 / 主标 chip / 选用）→「应用此版式」（toast 可撤销、自动翻页）→「继续下一步」；顺带检查点阵网格 / 页面浮影 / 等宽 kicker / 导出 HTML 页码微标签。
+- [ ] 改动位于 `feature/portfolio-design` 工作区（14 改 + 1 新文件），**尚未提交**，需用户确认后按仓库提交规范 commit 并合回 `dev`。
+
+## 作品集画廊暗色 UI + 版式方案持久化（2026-09-30 第二轮）
+
+针对「图片框中框」与「设计系统未对齐 Stitch 参考」两个反馈的重做轮。
+
+- 已修复（框中框）：LAYOUT OPTIONS 缩略图 canvas 自带 border、外面又有卡片 border → 去掉 canvas 边框改白印版 + 投影；导出（HTML/PNG）图注由「图片下沿深色半透明条」改为「图片下方等宽小字」（对齐参考的画廊图注语言），不再盖住画面。
+- 已实现（设计系统）：作品集页根节点 `.pf-gallery` 局部暗色主题令牌（近黑 `#0B0C0E` 画布 + 白色点阵网格 + 120px 淡主线；白色页面印版），antd 控件用嵌套 `ConfigProvider`（darkAlgorithm + `#2563EB` 主色）固定为画廊暗色，不随全局明暗主题漂移；方案卡片改白色印版风（无边框、蓝选用态）。
+- 已实现（刷新恢复）：版式方案按文档 remoteId 持久化 `localStorage`（`pf-agent-layouts:<docId>`）：运行完成整体覆盖、应用/放弃后清除、打开文档时恢复并按当前元素再收窄；无 localStorage 环境静默降级。`web/test/portfolio-agent-run.test.ts` 新增 5 项持久化用例。
+- [x] 验证：`tsc --noEmit`、`bun run build` 通过；作品集相关 45 项测试全过。dev web 容器已重启，服务端确认吐出 `pf-gallery` 新代码。
+- 说明：leafer 图片填充探针（容器内无头不可行）改用了 dev 探针页实测——`cover/fit/默认` 三种模式渲染均正确，画布白缝与 leafer 无关；探针文件（`leafer-debug.html`、`debug-leafer-m.ts`）已删除。
+- [ ] UI 验收：13000 强刷 `/plugins/portfolio` → 暗色画廊画布 + 白色页面印版；Agent 运行 → LAYOUT OPTIONS 卡片（无框中框）→ 选用/应用 → 刷新后方案仍在。导出 HTML/PNG 看图注为图下等宽小字。
+- [ ] 改动未提交（`feature/portfolio-design` 工作区），需用户确认后 commit 并合回 `dev`。

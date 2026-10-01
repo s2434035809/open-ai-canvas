@@ -2014,6 +2014,9 @@ func (s *Service) advanceCloudAgentTool(run *model.CloudAgentExecution, state *c
 		case call.Function.Name == "portfolio_propose_annotations":
 			// 只登记建议：作品集文档在这一步没有被修改，写入等用户在界面上确认。
 			result, toolErr = proposeCloudAgentPortfolioAnnotations(repo, run.UserID, state, run.ID, call)
+		case call.Function.Name == "portfolio_propose_layouts":
+			// 只登记版式方案：文档没被修改，等用户在工作台选定方案后才应用。
+			result, toolErr = proposeCloudAgentPortfolioLayouts(repo, run.UserID, state, run.ID, call)
 		case call.Function.Name == "skill_read_file", call.Function.Name == "model_list", call.Function.Name == "image_annotation_render":
 			result, toolErr = skillResult, skillErr
 		default:

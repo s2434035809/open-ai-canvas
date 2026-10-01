@@ -160,7 +160,8 @@ export function PortfolioCanvas({ onEditText, onReady }: PortfolioCanvasProps) {
         const scene = sceneRef.current;
         if (!scene || !page) return;
         scene.pageRect.set({ x: 0, y: 0, width: page.width, height: page.height, fill: page.background || "#ffffff" });
-        scene.shadow.set({ x: 0, y: 0, width: page.width, height: page.height, fill: "rgba(15, 23, 42, 0.10)" });
+        // 阴影整体右下偏移：页面像卡片一样"浮"在网格工作区上。
+        scene.shadow.set({ x: 5, y: 7, width: page.width, height: page.height, fill: "rgba(15, 23, 42, 0.16)" });
         syncElementNodes(scene, sortByZIndex(elements));
     }, [page, elements]);
 
@@ -508,7 +509,7 @@ function MarqueeOverlay({ marquee, viewport }: { marquee: PortfolioRect; viewpor
 function createScene(host: HTMLDivElement): Scene {
     const leafer = new Leafer({ view: host, width: 1, height: 1, pixelRatio: pixelRatio(), fill: "transparent", hittable: false, smooth: true });
     const world = new Group({ hittable: false });
-    const shadow = new Rect({ hittable: false, fill: "rgba(15, 23, 42, 0.10)" });
+    const shadow = new Rect({ hittable: false, fill: "rgba(15, 23, 42, 0.16)" });
     const pageRect = new Rect({ hittable: false });
     const content = new Group({ hittable: false });
     const chrome = new Group({ hittable: false });

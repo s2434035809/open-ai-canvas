@@ -44,7 +44,10 @@ export function PortfolioInspector() {
         <div className="thin-scrollbar h-full overflow-y-auto p-3">
             {single ? (
                 <div className="space-y-3">
-                    <header className="text-[var(--fs-body)] font-medium">{single.kind === "image" ? "图片元素" : "文字元素"}</header>
+                    <header>
+                        <div className="font-mono text-[10px] tracking-[0.18em] text-foreground/40 uppercase">Element</div>
+                        <div className="text-[var(--fs-body)] font-medium">{single.kind === "image" ? "图片元素" : "文字元素"}</div>
+                    </header>
                     <div className="grid grid-cols-2 gap-2">
                         <LabeledNumber label="X" value={single.x} onChange={(x) => updateElement(single.id, { x })} />
                         <LabeledNumber label="Y" value={single.y} onChange={(y) => updateElement(single.id, { y })} />
@@ -101,7 +104,10 @@ export function PortfolioInspector() {
                 </div>
             ) : selected.length > 1 ? (
                 <div className="space-y-3">
-                    <header className="text-[var(--fs-body)] font-medium">已选 {selected.length} 个元素</header>
+                    <header>
+                        <div className="font-mono text-[10px] tracking-[0.18em] text-foreground/40 uppercase">Selection</div>
+                        <div className="text-[var(--fs-body)] font-medium">已选 {selected.length} 个元素</div>
+                    </header>
                     <Field label="整体不透明度">
                         <Slider min={0} max={100} value={Math.round((selected[0]?.opacity ?? 1) * 100)} onChange={(value) => usePortfolioStore.getState().updateSelected({ opacity: value / 100 })} />
                     </Field>
@@ -109,7 +115,10 @@ export function PortfolioInspector() {
                 </div>
             ) : (
                 <div className="space-y-3">
-                    <header className="text-[var(--fs-body)] font-medium">页面与文档</header>
+                    <header>
+                        <div className="font-mono text-[10px] tracking-[0.18em] text-foreground/40 uppercase">Page &amp; Doc</div>
+                        <div className="text-[var(--fs-body)] font-medium">页面与文档</div>
+                    </header>
                     {page ? (
                         <>
                             <Field label="页面名称">

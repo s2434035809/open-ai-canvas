@@ -5,7 +5,8 @@
  * 「文档生命周期 + 快捷键 + 拖拽导入 + Agent 调度」，排版与交互都在下层组件里。
  */
 
-import { App, Button, Dropdown, Input, Modal, Segmented, Spin } from "antd";
+import { App, Button, ConfigProvider, Dropdown, Input, Modal, Segmented, Spin, theme as antdTheme } from "antd";
+import type { ThemeConfig } from "antd";
 import { FilePlus2, FolderOpen, Loader2, Sparkles } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
@@ -18,9 +19,9 @@ import { PortfolioInspector } from "@/components/portfolio/portfolio-inspector";
 import { PortfolioSidebar } from "@/components/portfolio/portfolio-sidebar";
 import { PortfolioToolbar } from "@/components/portfolio/portfolio-toolbar";
 import { EmptyState } from "@/components/ui/product/empty-state";
-import { PORTFOLIO_AGENT_MAX_IMAGES, runPortfolioAnnotationAgent } from "@/lib/portfolio/agent-run";
-import { isPortfolioDocument, PORTFOLIO_MAX_DOC_BYTES, type PortfolioDocument, type PortfolioElementPatch } from "@/lib/portfolio/contracts";
-import { createPortfolioDocument as createBlankDocument } from "@/lib/portfolio/document";
+import { persistPortfolioLayoutOptions, readStoredPortfolioLayoutOptions, type PortfolioLayoutOption, PORTFOLIO_AGENT_MAX_IMAGES, runPortfolioAnnotationAgent } from "@/lib/portfolio/agent-run";
+import { isPortfolioDocument, PORTFOLIO_MAX_DOC_BYTES, type PortfolioDocument, type PortfolioElement, type PortfolioElementPatch } from "@/lib/portfolio/contracts";
+import { createPortfolioDocument as createBlankDocument, createTextElement, nextZIndex } from "@/lib/portfolio/document";
 import { runPortfolioExport } from "@/lib/portfolio/export";
 import { PORTFOLIO_EXPORT_DEFAULT_SCALE, type PortfolioExportTarget } from "@/lib/portfolio/export/types";
 import { imageFilesFromDataTransfer, readLocalImage, uploadImageSource, uploadLocalImage } from "@/lib/portfolio/image-import";
@@ -62,6 +63,11 @@ export default function PortfolioStudioPage() {
     const [agentText, setAgentText] = useState("");
     const [agentFailure, setAgentFailure] = useState("");
     const [reviewItems, setReviewItems] = useState<PortfolioProposalReviewItem[]>([]);
+    /** Agent 提出的版式方案（Stitch 式：选定一个才应用，应用后可一键撤销）。 */
+    const [layoutOptions, setLayoutOptions] = useState<PortfolioLayoutOption[]>([]);
+    const [selectedLayout, setSelectedLayout] = useState<number | null>(null);
+    /** 刚应用过的方案：驱动「继续下一步」的指令与提示。 */
+    const [appliedLayout, setAppliedLayout] = useState<{ name: string; title?: string } | null>(null);
     const [exporting, setExporting] = useState(false);
     const [exportStage, setExportStage] = useState("");
     const [exportScale, setExportScale] = useState<number>(PORTFOLIO_EXPORT_DEFAULT_SCALE);
@@ -89,6 +95,13 @@ export default function PortfolioStudioPage() {
                 const view = await getPortfolioDocument(id);
                 if (!isPortfolioDocument(view.doc)) throw new Error("文档结构无法识别");
                 store.loadDocument(view.doc, { remoteId: view.id, revision: view.revision });
+                // 恢复上一轮版式方案：方案本来只活在页面内存里，刷新就没了；
+                // 恢复时按当前文档元素再收窄一次，元素被删过的方案自动丢弃。
+                const restoredOptions = narrowLayoutOptions(readStoredPortfolioLayoutOptions(view.id), view.doc);
+                if (restoredOptions.length > 0) {
+                    setLayoutOptions(restoredOptions);
+                    setSelectedLayout(null);
+                }
             } catch (reason) {
                 store.setError(reason instanceof Error ? reason.message : "打开作品集失败");
                 void message.error("打开作品集失败，请稍后重试");
@@ -212,6 +225,9 @@ export default function PortfolioStudioPage() {
             setAgentReasoning("");
             setAgentText("");
             setAgentFailure("");
+            setLayoutOptions([]);
+            setSelectedLayout(null);
+            setAppliedLayout(null);
             abortRef.current?.abort();
             const controller = new AbortController();
             abortRef.current = controller;
@@ -280,8 +296,16 @@ export default function PortfolioStudioPage() {
                 });
                 if (controller.signal.aborted) return;
 
-                // 建议只对"仍然存在"的图片生效：运行期间用户可能删过元素或换了页。
+                // 建议只对"仍然存在"的元素生效：运行期间用户可能删过元素或换了页。
                 const currentPageAfterRun = currentPortfolioPage(usePortfolioStore.getState());
+                const narrowedOptions = narrowLayoutOptions(result.layoutOptions, usePortfolioStore.getState().document);
+                if (narrowedOptions.length > 0) {
+                    setLayoutOptions(narrowedOptions);
+                    setSelectedLayout(null);
+                    setAppliedLayout(null);
+                }
+                // 本轮方案落盘（整体覆盖）；本轮一无所获时清掉上轮数据，避免刷新后看到过期的旧方案。
+                persistPortfolioLayoutOptions(usePortfolioStore.getState().remoteId ?? "", result.layoutOptions);
                 const reviewed: PortfolioProposalReviewItem[] = [];
                 const seen = new Set<string>();
                 for (const proposal of result.proposals) {
@@ -307,8 +331,8 @@ export default function PortfolioStudioPage() {
                     setAgentFailure(result.failureMessage || "Agent 运行没有完成");
                     return;
                 }
-                // 成功但没有建议：正文里通常已经解释了原因，只有连正文都没有时才补一句。
-                if (!result.summary.trim()) setAgentFailure("Agent 没有给出可用的分类结果");
+                // 成功但既没有版式方案也没有图注建议：正文里通常已经解释了原因。
+                if (reviewed.length === 0 && !result.summary.trim()) setAgentFailure("Agent 没有给出可用的版式或图注结果");
             } catch (reason) {
                 if (controller.signal.aborted) return;
                 setAgentFailure(reason instanceof Error ? reason.message : "Agent 分析失败");
@@ -346,6 +370,112 @@ export default function PortfolioStudioPage() {
         void save();
         void message.success(`已写入 ${patches.size} 张图片的分类与图注`);
     }, [message, reviewItems, save]);
+
+    /** 选定版式应用：既有元素打补丁 + 新增文本元素，同属一次撤销记录，随后落库并前进到下一页。 */
+    const applySelectedLayout = useCallback(() => {
+        if (selectedLayout === null) return;
+        const option = layoutOptions[selectedLayout];
+        if (!option) return;
+        const store = usePortfolioStore.getState();
+        // 方案绑定的是它出生时的页：用户可能已经翻页，先切回去再应用，
+        // 否则补丁会打到错页、新元素也会落到错页。
+        if (option.pageId) {
+            const document = store.document;
+            const index = document?.pages.findIndex((item) => item.id === option.pageId) ?? -1;
+            if (index >= 0 && index !== store.pageIndex) store.setPageIndex(index);
+        }
+        const page = currentPortfolioPage(usePortfolioStore.getState());
+        if (!page) return;
+        const byId = new Map(page.elements.map((element) => [element.id, element]));
+        const patches = new Map<string, PortfolioElementPatch>();
+        const newElements: PortfolioElement[] = [];
+        let zIndex = nextZIndex(page.elements);
+        for (const element of option.elements) {
+            if (element.elementId) {
+                const target = byId.get(element.elementId);
+                if (!target) continue;
+                const patch: PortfolioElementPatch = {};
+                if (element.x !== undefined && element.y !== undefined && element.width !== undefined && element.height !== undefined) {
+                    patch.x = element.x;
+                    patch.y = element.y;
+                    patch.width = element.width;
+                    patch.height = element.height;
+                }
+                if (target.kind === "image") {
+                    if (element.caption) patch.caption = element.caption;
+                    if (element.tags?.length) patch.tags = Array.from(new Set([...target.tags, ...element.tags]));
+                } else {
+                    if (element.text) patch.text = element.text;
+                    if (element.fontSize !== undefined) patch.fontSize = element.fontSize;
+                    if (element.color) patch.color = element.color;
+                    if (element.align) patch.align = element.align;
+                    if (element.lineHeight !== undefined) patch.lineHeight = element.lineHeight;
+                    if (element.letterSpacing !== undefined) patch.letterSpacing = element.letterSpacing;
+                }
+                if (Object.keys(patch).length > 0) patches.set(target.id, patch);
+                continue;
+            }
+            if (element.kind !== "text" || !element.text || element.x === undefined || element.y === undefined || !element.width || !element.height) continue;
+            newElements.push({
+                ...createTextElement({
+                    text: element.text,
+                    x: element.x,
+                    y: element.y,
+                    width: element.width,
+                    height: element.height,
+                    zIndex,
+                    fontSize: element.fontSize,
+                    color: element.color,
+                    fontWeight: element.role === "title" ? 600 : 400,
+                }),
+                align: element.align ?? "left",
+                lineHeight: element.lineHeight ?? 1.4,
+                letterSpacing: element.letterSpacing ?? 0,
+            });
+            zIndex += 1;
+        }
+        if (patches.size === 0 && newElements.length === 0) {
+            void message.info("这个方案没有可应用的改动");
+            return;
+        }
+        store.applyLayoutChanges({ patches, newElements });
+        // 与图注落地同一纪律：界面承诺「应用」就必须落库，否则刷新即丢。
+        void save();
+        // 前进到下一页（最后一页则回到第一页重排），驱动下一步指令。
+        const document = usePortfolioStore.getState().document;
+        if (document && document.pages.length > 1) {
+            const current = usePortfolioStore.getState().pageIndex;
+            usePortfolioStore.getState().setPageIndex(current + 1 < document.pages.length ? current + 1 : 0);
+        }
+        setLayoutOptions([]);
+        setSelectedLayout(null);
+        setAppliedLayout({ name: option.name, title: option.title });
+        // 方案已落进文档：清掉持久化，刷新后不该再弹回同一批卡片（重应用会重复新建文本元素）。
+        persistPortfolioLayoutOptions(usePortfolioStore.getState().remoteId ?? "", []);
+        void message.success(`已按「${option.name}」应用版式（可一键撤销）`);
+    }, [layoutOptions, message, save, selectedLayout]);
+
+    /** 「继续下一步」：按已应用方案生成下轮指令，直接开跑。 */
+    const continueNextStep = useCallback(() => {
+        if (!appliedLayout) return;
+        const document = usePortfolioStore.getState().document;
+        const pageCount = document?.pages.length ?? 1;
+        const titleSuffix = appliedLayout.title ? `（主标：${appliedLayout.title}）` : "";
+        const target = pageCount > 1 ? "下一页" : "当前页";
+        void runAgent(
+            `上一步已按「${appliedLayout.name}」${titleSuffix}完成排版。请继续${target}：先读取该页元素，逐张查看图片画面，再提交 2-4 个版式方案供用户挑选。`,
+        );
+    }, [appliedLayout, runAgent]);
+
+    const discardLayoutOptions = useCallback(() => {
+        setLayoutOptions([]);
+        setSelectedLayout(null);
+        persistPortfolioLayoutOptions(usePortfolioStore.getState().remoteId ?? "", []);
+    }, []);
+
+    const continueHint = appliedLayout
+        ? `「${appliedLayout.name}」已应用${appliedLayout.title ? `，主标「${appliedLayout.title}」已落版` : ""}`
+        : "";
 
     const classifyDisabled = !currentPage || currentPage.elements.every((element) => element.kind !== "image");
 
@@ -490,7 +620,8 @@ export default function PortfolioStudioPage() {
     );
 
     return (
-        <main className="flex h-full min-h-0 flex-col bg-muted/20">
+        <ConfigProvider theme={PORTFOLIO_GALLERY_ANT_THEME}>
+            <main className="pf-gallery flex h-full min-h-0 flex-col">
             <PortfolioToolbar
                 onBack={() => navigate("/plugins")}
                 onSave={() => void save()}
@@ -588,11 +719,20 @@ export default function PortfolioStudioPage() {
                                     failureMessage={agentFailure}
                                     proposals={reviewItems}
                                     imageCount={currentPage ? currentPage.elements.filter((element) => element.kind === "image").length : 0}
+                                    layoutOptions={layoutOptions}
+                                    selectedLayout={selectedLayout}
+                                    previewPage={currentPage}
                                     onRun={(instruction) => void runAgent(instruction)}
                                     onStop={() => abortRef.current?.abort()}
                                     onToggleProposal={toggleReviewItem}
                                     onApplyProposals={applyReviewedProposals}
                                     onDiscardProposals={() => setReviewItems([])}
+                                    onSelectLayout={(index) => setSelectedLayout(index)}
+                                    onApplyLayout={applySelectedLayout}
+                                    onDiscardLayouts={discardLayoutOptions}
+                                    canContinueNext={appliedLayout !== null}
+                                    continueHint={continueHint}
+                                    onContinueNext={continueNextStep}
                                 />
                             ) : (
                                 <PortfolioInspector />
@@ -616,7 +756,8 @@ export default function PortfolioStudioPage() {
             >
                 <Input.TextArea value={textDraft} onChange={(event) => setTextDraft(event.target.value)} autoSize={{ minRows: 6, maxRows: 16 }} placeholder="输入作品集里的标题、说明或图注" />
             </Modal>
-        </main>
+            </main>
+        </ConfigProvider>
     );
 }
 
@@ -627,6 +768,38 @@ function firstImageSource(doc: PortfolioDocument): string {
         if (image && image.kind === "image") return image.src;
     }
     return "";
+}
+
+/** 作品集工作台固定用画廊暗色（Stitch 参考语言），不随全局明暗主题漂移。 */
+const PORTFOLIO_GALLERY_ANT_THEME: ThemeConfig = {
+    algorithm: antdTheme.darkAlgorithm,
+    token: {
+        colorPrimary: "#2563EB",
+        colorBgBase: "#0B0C0E",
+        colorBgContainer: "#15161A",
+        colorBgElevated: "#191B20",
+        colorBorder: "rgba(255, 255, 255, 0.14)",
+        colorText: "#ECEDEF",
+        colorTextSecondary: "rgba(236, 237, 239, 0.58)",
+        colorTextTertiary: "rgba(236, 237, 239, 0.4)",
+        colorTextDescription: "rgba(236, 237, 239, 0.45)",
+        borderRadius: 8,
+        fontFamily: "Inter, system-ui, -apple-system, sans-serif",
+    },
+};
+
+/** 把运行期收到的方案收窄到「目标页仍然存在的元素」，空方案丢弃。 */
+function narrowLayoutOptions(options: readonly PortfolioLayoutOption[], document: { pages: readonly { id: string; elements: readonly { id: string }[] }[] } | null): PortfolioLayoutOption[] {
+    if (!document || document.pages.length === 0) return [];
+    const elementsByPage = new Map(document.pages.map((page) => [page.id, new Set(page.elements.map((item) => item.id))]));
+    const narrowed: PortfolioLayoutOption[] = [];
+    for (const option of options) {
+        const current = option.pageId ? elementsByPage.get(option.pageId) : elementsByPage.get(document.pages[0].id);
+        if (!current) continue;
+        const kept = option.elements.filter((element) => !element.elementId || current.has(element.elementId));
+        if (kept.length > 0) narrowed.push({ ...option, elements: kept });
+    }
+    return narrowed;
 }
 
 function isTypingTarget(target: EventTarget | null) {

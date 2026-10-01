@@ -20,14 +20,17 @@ description: 当前项目已实现的核心工作台能力与使用入口
 - **运行身份**：作品集不是画布，而云 Agent 以 `canvasId` 作为运行主键（存在性 + 归属 + 提示词缓存键 + 幂等指纹）。因此每份作品集派生一张 `pf-<文档ID>` 的"身份壳画布"，由后端在首次运行时按需创建。壳画布不镜像作品集内容，作品集文档始终是唯一真相源；它也会被画布列表按前缀过滤掉，用户不会看到这张空画布。
 - **只读 + 提议**：Agent 通过 `portfolio_read_document` 读页面目录、`portfolio_inspect_image` 查看真实画面（图片必须已存入账号资源库）、`portfolio_propose_annotations` 提交建议。它**不改文档**：建议以 `portfolio_annotations_proposed` 事件回到界面，用户勾选确认后才写入，可用撤销一步回到分析前。
 - **模型要求**：内置 Agent 只接受后端受管文本模型（`channelId + channelModelKey`），拒绝浏览器自带密钥。看图配文依赖声明了图片输入能力（`text.references.maxImages > 0`）的渠道模型；`logicalModelId` 形式拿不到该能力声明，因此不会被判为支持看图。
-- **作用域隔离**：作品集运行不声明画布上下文（`contextScope` 为空），所以运行里不注册任何画布工具与媒体生成工具，模型只能碰作品集自己的三个工具。
+- **版式方案**：Agent 通过 `portfolio_propose_layouts` 为单页提交 2~4 个可选版式（主标 + 图片排布 + 图注微调），以 `portfolio_layouts_proposed` 事件回到界面，用户选定其中一个才写入文档，可一步撤销。元素级强校验：未知 `elementId`、缺文本或缺坐标、越界、无改动的方案项会被带理由剔除；整批全非法则整批拒绝。
+- **作用域隔离**：作品集运行不声明画布上下文（`contextScope` 为空），所以运行里不注册任何画布工具与媒体生成工具，模型只能碰作品集自己的四个工具。
 
 ### 相关实现
 
 - `web/src/lib/portfolio/agent-run.ts`：壳画布 ID 派生、`createAgentRun` 请求体装配、事件流收集与建议解析。
-- `web/src/pages/portfolio/index.tsx`：图片资源补传 → 保存 → 运行 → 建议确认弹窗 → `applyElementPatches` 写入。
+- `web/src/pages/portfolio/index.tsx`：图片资源补传 → 保存 → 运行 → 建议确认弹窗 / 版式选用 → `applyElementPatches`、`applyLayoutChanges` 写入，"继续下一步"按新指令推进下一页。
 - `backend/internal/app/portfolio_agent.go`：壳画布惰性创建、文档读投影、看图资源校验、建议登记。
-- `backend/internal/app/cloud_agent_tools.go`：三个作品集工具的注册与平台能力集派生。
+- `web/src/components/portfolio/portfolio-layout-thumbnail.tsx`：离屏 canvas 版式缩略图（与导出同款换行/裁切规则，图片 4 秒未加载画灰块）。
+- `web/src/components/portfolio/portfolio-agent-panel.tsx`：LAYOUT OPTIONS 卡片（缩略图 / 主标 chip / 选用 / 应用此版式 / 放弃）与"继续下一步"入口。
+- `backend/internal/app/cloud_agent_tools.go`：四个作品集工具的注册与平台能力集派生。
 
 ## 素材库分类与画布媒体链路
 

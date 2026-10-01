@@ -17,8 +17,11 @@ import { Check, ChevronDown, ChevronRight, Loader2, Play, Sparkles } from "lucid
 import { useMemo, useState } from "react";
 
 import { ModelPicker } from "@/components/model-picker";
-import { PORTFOLIO_AGENT_DEFAULT_INSTRUCTION } from "@/lib/portfolio/agent-run";
+import { type PortfolioLayoutOption, PORTFOLIO_AGENT_DEFAULT_INSTRUCTION } from "@/lib/portfolio/agent-run";
+import { type PortfolioPage } from "@/lib/portfolio/contracts";
 import { selectableModelsByCapability, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
+
+import { PortfolioLayoutThumbnail } from "./portfolio-layout-thumbnail";
 
 /** 待确认的建议条目：页面在运行结束后按"元素是否还在"收窄，面板只负责展示与勾选。 */
 export type PortfolioProposalReviewItem = {
@@ -53,14 +56,27 @@ export type PortfolioAgentPanelProps = {
     proposals: readonly PortfolioProposalReviewItem[];
     /** 当前页会被处理的图片数量，让用户在按下按钮前就知道代价。 */
     imageCount: number;
+    /** Agent 提出的版式方案（未选定前一直挂在面板上，供用户挑选）。 */
+    layoutOptions: readonly PortfolioLayoutOption[];
+    /** 用户选中的方案下标；null 表示还没选。 */
+    selectedLayout: number | null;
+    /** 方案预览所用的当前页；为空时卡片只显示文字。 */
+    previewPage: PortfolioPage | null;
     onRun: (instruction: string) => void;
     onStop: () => void;
     onToggleProposal: (elementId: string, accepted: boolean) => void;
     onApplyProposals: () => void;
     onDiscardProposals: () => void;
+    onSelectLayout: (index: number) => void;
+    onApplyLayout: () => void;
+    onDiscardLayouts: () => void;
+    /** 应用方案后的「继续下一步」：自动进入下一页并生成下轮指令。 */
+    canContinueNext: boolean;
+    continueHint: string;
+    onContinueNext: () => void;
 };
 
-export function PortfolioAgentPanel({ busy, canRun, stage, reasoning, assistantText, steps, failureMessage, proposals, imageCount, onRun, onStop, onToggleProposal, onApplyProposals, onDiscardProposals }: PortfolioAgentPanelProps) {
+export function PortfolioAgentPanel({ busy, canRun, stage, reasoning, assistantText, steps, failureMessage, proposals, imageCount, layoutOptions, selectedLayout, previewPage, onRun, onStop, onToggleProposal, onApplyProposals, onDiscardProposals, onSelectLayout, onApplyLayout, onDiscardLayouts, canContinueNext, continueHint, onContinueNext }: PortfolioAgentPanelProps) {
     const config = useEffectiveConfig();
     const updateConfig = useConfigStore((state) => state.updateConfig);
     const [instruction, setInstruction] = useState(PORTFOLIO_AGENT_DEFAULT_INSTRUCTION);
@@ -80,7 +96,7 @@ export function PortfolioAgentPanel({ busy, canRun, stage, reasoning, assistantT
     };
 
     const acceptedCount = proposals.filter((item) => item.accepted).length;
-    const started = busy || steps.length > 0 || Boolean(assistantText) || Boolean(reasoning) || proposals.length > 0;
+    const started = busy || steps.length > 0 || Boolean(assistantText) || Boolean(reasoning) || proposals.length > 0 || layoutOptions.length > 0;
 
     return (
         <div className="flex h-full min-h-0 flex-col">
@@ -94,15 +110,19 @@ export function PortfolioAgentPanel({ busy, canRun, stage, reasoning, assistantT
                 {!started ? <p className="text-[var(--fs-micro)] leading-5 text-foreground/55">写下要求后运行：Agent 会读取当前页元素、逐张查看图片画面，再把图注与标签作为建议提交上来。建议不会直接改动作品集，确认后才写入。</p> : null}
 
                 {steps.length > 0 ? (
-                    <ol className="space-y-1">
-                        {steps.map((step, index) => (
-                            <li key={`${step.toolName}-${index}`} className="flex items-center gap-1.5 text-[var(--fs-micro)] text-foreground/70">
-                                {step.ok ? <Check className="size-3 shrink-0 text-emerald-600" /> : <span className="size-3 shrink-0 text-center text-destructive">!</span>}
-                                <span className="truncate">{step.label}</span>
-                                <span className="ml-auto shrink-0 text-foreground/35">{step.ok ? "完成" : "失败"}</span>
-                            </li>
-                        ))}
-                    </ol>
+                    <div>
+                        <div className="mb-1 font-mono text-[10px] tracking-[0.18em] text-foreground/40 uppercase">Console Log</div>
+                        <ol className="space-y-0.5">
+                            {steps.map((step, index) => (
+                                <li key={`${step.toolName}-${index}`} className="flex items-center gap-1.5 font-mono text-[var(--fs-micro)] text-foreground/70">
+                                    <span className="w-4 shrink-0 text-right text-foreground/30 select-none">{String(index + 1).padStart(2, "0")}</span>
+                                    {step.ok ? <Check className="size-3 shrink-0 text-emerald-600" /> : <span className="size-3 shrink-0 text-center text-destructive">!</span>}
+                                    <span className="truncate">{step.label}</span>
+                                    <span className="ml-auto shrink-0 text-foreground/35">{step.ok ? "完成" : "失败"}</span>
+                                </li>
+                            ))}
+                        </ol>
+                    </div>
                 ) : null}
 
                 {reasoning ? (
@@ -125,6 +145,55 @@ export function PortfolioAgentPanel({ busy, canRun, stage, reasoning, assistantT
                 ) : null}
 
                 {failureMessage ? <div className="rounded-[var(--r-md)] border border-destructive/30 bg-destructive/10 px-2 py-1.5 text-[var(--fs-micro)] leading-5 text-destructive">{failureMessage}</div> : null}
+
+                {layoutOptions.length > 0 ? (
+                    <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                            <span className="font-mono text-[10px] tracking-[0.18em] text-foreground/40 uppercase">Layout Options</span>
+                            <span className="text-[var(--fs-micro)] text-foreground/45">{layoutOptions.length} 个方案</span>
+                        </div>
+                        <p className="text-[var(--fs-micro)] leading-5 text-foreground/55">每个方案都能在小图上看到排版效果。选定一个后应用，应用可一键撤销。</p>
+                        <div className="space-y-2">
+                            {layoutOptions.map((option, index) => (
+                                <div
+                                    key={`${option.name}-${index}`}
+                                    className={selectedLayout === index ? "rounded-[var(--r-md)] border border-sky-500 bg-sky-500/10 p-2" : "rounded-[var(--r-md)] border border-white/10 bg-white/[0.04] p-2"}
+                                >
+                                    {previewPage ? <PortfolioLayoutThumbnail page={previewPage} option={option} /> : null}
+                                    <div className="mt-2 flex items-start gap-2">
+                                        <div className="min-w-0 flex-1">
+                                            <div className="flex items-baseline gap-1.5">
+                                                <span className="text-[var(--fs-body)] font-semibold break-words">{option.name}</span>
+                                                {option.title ? <span className="shrink-0 rounded-[var(--r-sm)] bg-white/10 px-1 py-px font-mono text-[10px] text-foreground/70">主标「{option.title}」</span> : null}
+                                            </div>
+                                            {option.reason ? <div className="mt-0.5 text-[var(--fs-micro)] leading-5 text-foreground/55 break-words">{option.reason}</div> : null}
+                                        </div>
+                                        <Button type={selectedLayout === index ? "primary" : "default"} size="small" onClick={() => onSelectLayout(index)}>
+                                            {selectedLayout === index ? "已选用" : "选用"}
+                                        </Button>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                        <div className="flex gap-1">
+                            <Button type="primary" size="small" disabled={selectedLayout === null} onClick={onApplyLayout}>
+                                应用此版式
+                            </Button>
+                            <Button size="small" onClick={onDiscardLayouts}>
+                                放弃方案
+                            </Button>
+                        </div>
+                    </div>
+                ) : null}
+
+                {canContinueNext ? (
+                    <div className="flex items-center gap-2 rounded-[var(--r-md)] border border-emerald-500/30 bg-emerald-500/10 px-2 py-1.5">
+                        <span className="min-w-0 flex-1 text-[var(--fs-micro)] leading-5 text-emerald-700">{continueHint}</span>
+                        <Button type="primary" size="small" onClick={onContinueNext}>
+                            继续下一步
+                        </Button>
+                    </div>
+                ) : null}
 
                 {proposals.length > 0 ? (
                     <div className="space-y-2">

@@ -642,6 +642,39 @@ func compileCloudAgentTools(req CloudAgentRequest, includeProfileTool bool) []ma
 				"required": []string{"elementId"}, "additionalProperties": false,
 			}},
 		}, "items")
+		add("portfolio_propose_layouts", "为作品集的某一页一次提交 2-4 个版式方案供用户挑选（主标式搭建排版：每个方案以主标题为锚点组织图片、图注与留白）。方案 = 名字（12 字内，要可区分）+ 一句理由（40 字内）+ 可选主标 title（40 字内）+ elements：elementId 用 portfolio_read_document 返回的既有元素做移动/缩放/改图注（x/y/width/height 为页面像素且最终盒子不能越出页面边界），或 kind=text 新增文本元素（text 60 字内，role 取 title/caption/label，给出完整 x/y/width/height 与字号）。它只登记方案、不修改作品集：用户在工作台选定后才会应用，不要把它当成立即生效的写操作。方案名重复、坐标越界、引用不存在的元素都会被逐项拒绝并给出理由。", map[string]any{
+			"pageId": str("目标页的 pageId（portfolio_read_document 目录里返回；一次只针对一页）"),
+			"options": map[string]any{"type": "array", "minItems": 2, "maxItems": 4, "items": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"name":  str("方案名，12 字内，例如：瑞士双栏 / 杂志通栏 / 对称双页"),
+					"reason": str("一句话说明为什么这样排，40 字内"),
+					"title":  str("可选：该方案下这一页的主标题文字，40 字内"),
+					"elements": map[string]any{"type": "array", "maxItems": 24, "items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"elementId": str("页面内既有元素 ID；新增文本元素时留空"),
+							"kind":      map[string]any{"type": "string", "enum": []any{"text"}, "description": "新增文本元素时填 text"},
+							"text":      str("新增文本内容，60 字内"),
+							"role":      map[string]any{"type": "string", "enum": []any{"title", "caption", "label"}, "description": "新增文本的角色：主标/图注/标签"},
+							"x":         map[string]any{"type": "number", "minimum": 0, "description": "页面像素坐标（左上原点）；既有元素可只给改动项"},
+							"y":         map[string]any{"type": "number", "minimum": 0, "description": "页面像素坐标（左上原点）；既有元素可只给改动项"},
+							"width":     map[string]any{"type": "number", "exclusiveMinimum": 0, "description": "盒子宽（页面像素）"},
+							"height":    map[string]any{"type": "number", "exclusiveMinimum": 0, "description": "盒子高（页面像素）"},
+							"caption":   str("既有图片的新图注，300 字内"),
+							"tags":      map[string]any{"type": "array", "maxItems": 6, "items": str("既有图片的新分类标签")},
+							"fontSize":  map[string]any{"type": "number", "minimum": 8, "maximum": 240, "description": "文本字号（页面像素）"},
+							"color":     str("文本颜色，十六进制如 #1f2328"),
+							"align":     map[string]any{"type": "string", "enum": []any{"left", "center", "right"}},
+							"lineHeight": map[string]any{"type": "number", "minimum": 0.8, "maximum": 3},
+							"letterSpacing": map[string]any{"type": "number", "minimum": -8, "maximum": 40},
+						},
+						"additionalProperties": false,
+					}},
+				},
+				"required": []string{"name", "reason"}, "additionalProperties": false,
+			}},
+		}, "pageId", "options")
 	}
 	return tools
 }

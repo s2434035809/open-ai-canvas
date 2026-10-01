@@ -59,7 +59,7 @@ function PageSection({ pages, activeId }: { pages: readonly PortfolioPage[]; act
     return (
         <div className="space-y-2">
             <div className="flex items-center justify-between">
-                <span className="text-[var(--fs-micro)] font-medium text-foreground/60">共 {pages.length} 页</span>
+                <span className="font-mono text-[10px] tracking-[0.18em] text-foreground/45 uppercase">Pages · {String(pages.length).padStart(2, "0")}</span>
                 <Button size="small" type="text" icon={<Plus className="size-4" />} onClick={addPage}>
                     新增页
                 </Button>

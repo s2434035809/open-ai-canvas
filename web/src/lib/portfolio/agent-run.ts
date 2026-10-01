@@ -48,6 +48,34 @@ export type PortfolioAgentImage = {
     tags: string[];
 };
 
+/** 版式方案里的单个元素：要么改既有元素（elementId），要么新增文本（kind="text"）。 */
+export type PortfolioLayoutElement = {
+    elementId?: string;
+    kind?: "text";
+    text?: string;
+    role?: "title" | "caption" | "label";
+    x?: number;
+    y?: number;
+    width?: number;
+    height?: number;
+    caption?: string;
+    tags?: string[];
+    fontSize?: number;
+    color?: string;
+    align?: "left" | "center" | "right";
+    lineHeight?: number;
+    letterSpacing?: number;
+};
+
+/** 一个可挑选的版式方案：名字 + 一句理由 + 可选主标 + 元素编排。 */
+export type PortfolioLayoutOption = {
+    name: string;
+    reason: string;
+    title?: string;
+    pageId?: string;
+    elements: PortfolioLayoutElement[];
+};
+
 export type PortfolioAgentProgress = {
     /** 给用户看的一句话进度，例如"正在查看图片画面…"。 */
     stage: string;
@@ -57,6 +85,7 @@ export type PortfolioAgentProgress = {
 
 export type PortfolioAgentRunResult = {
     proposals: PortfolioAnnotationProposal[];
+    layoutOptions: PortfolioLayoutOption[];
     summary: string;
     /** 模型的思考过程（若模型输出）。面板里折叠展示，与画布 Agent 面板一致。 */
     reasoning: string;
@@ -98,7 +127,8 @@ export function portfolioAgentModelSelection(config: AiConfig, model: string): P
 }
 
 /** 面板输入框的默认要求：用户可在此基础上任意改写。 */
-export const PORTFOLIO_AGENT_DEFAULT_INSTRUCTION = "为当前页的每张图片补充中文图注与分类标签。";
+export const PORTFOLIO_AGENT_DEFAULT_INSTRUCTION =
+    "以主标题为锚点排版当前页：给 2-4 个可挑选的版式方案（如瑞士双栏 / 杂志通栏 / 对称双页），方案之间要可区分，每个方案用主标组织图片、图注与留白。";
 
 /**
  * 提示词分两段拼：**用户要求**（可以自由改写）在前，**执行步骤**（元素 ID、工具顺序、
@@ -112,8 +142,10 @@ export function buildPortfolioAgentPrompt(input: { pageId: string; pageName: str
         "步骤：",
         `1. 调用 portfolio_read_document（pageId=${input.pageId}）读取本页元素，确认下面每张图都还在。`,
         "2. 对下面列出的每一张图调用 portfolio_inspect_image 查看实际画面。画面是判断依据，不要凭图注或文件名猜。",
-        "3. 全部看完后，用一次 portfolio_propose_annotations 提交建议：每张图一条，caption 不超过 40 字、客观描述画面；tags 给 1-4 个分类标签，尽量复用常见类别（人像、风景、产品、建筑、插画、概念设计、界面）。",
-        "4. 只处理下面列出的图片，不要动其它页面或其它元素。建议提交一次即可，重复提交会被拒绝。",
+        "3. 全部看完后，用一次 portfolio_propose_layouts 提交版式方案：2-4 个方案，每个方案 = 名字（12 字内、要可区分）+ 一句理由（40 字内）+ 可选主标 title（40 字内）+ elements。",
+        "   方案以主标题为锚点搭建排版：elements 里可以移动/缩放本页既有元素（坐标为页面像素、不能越出页面边界），也可以 kind=text 新增文本元素（role 取 title/caption/label，text 60 字内，给出完整 x/y/width/height 与字号），主标用 role=title 的元素落在版面上。",
+        "   图注与分类标签仍用 portfolio_propose_annotations 提交：每张图一条，caption 不超过 40 字、客观描述画面；tags 给 1-4 个分类标签，尽量复用常见类别（人像、风景、产品、建筑、插画、概念设计、界面）。",
+        "4. 只处理下面列出的图片与所在页的元素，不要动其它页面。建议与方案都提交一次即可，重复提交会被拒绝。用户选定方案后才会应用，不要假设自己替用户做了选择。",
         "",
         `本页：${input.pageName || "当前页"}（pageId=${input.pageId}）`,
         "待处理图片（elementId｜现有图注｜现有标签）：",
@@ -152,11 +184,98 @@ export function parsePortfolioAnnotationProposals(value: unknown): PortfolioAnno
     return proposals;
 }
 
+/** 事件负载里的 options 是模型产物，按契约收窄后再交给界面。 */
+export function parsePortfolioLayoutOptions(value: unknown): PortfolioLayoutOption[] {
+    if (!Array.isArray(value)) return [];
+    const options: PortfolioLayoutOption[] = [];
+    for (const item of value) {
+        if (!item || typeof item !== "object") continue;
+        const record = item as Record<string, unknown>;
+        const name = typeof record.name === "string" ? record.name.trim() : "";
+        if (!name) continue;
+        const elements: PortfolioLayoutElement[] = [];
+        if (Array.isArray(record.elements)) {
+            for (const element of record.elements) {
+                if (!element || typeof element !== "object") continue;
+                const entry = element as Record<string, unknown>;
+                const parsed: PortfolioLayoutElement = {};
+                if (typeof entry.elementId === "string" && entry.elementId.trim()) parsed.elementId = entry.elementId.trim();
+                if (entry.kind === "text") parsed.kind = "text";
+                if (typeof entry.text === "string" && entry.text.trim()) parsed.text = entry.text.trim();
+                if (entry.role === "title" || entry.role === "caption" || entry.role === "label") parsed.role = entry.role;
+                for (const key of ["x", "y", "width", "height", "fontSize", "lineHeight", "letterSpacing"] as const) {
+                    const numeric = entry[key];
+                    if (typeof numeric === "number" && Number.isFinite(numeric)) parsed[key] = numeric;
+                }
+                if (typeof entry.caption === "string" && entry.caption.trim()) parsed.caption = entry.caption.trim();
+                if (Array.isArray(entry.tags)) {
+                    const tags = entry.tags
+                        .filter((tag): tag is string => typeof tag === "string" && tag.trim().length > 0)
+                        .map((tag) => tag.trim())
+                        .slice(0, PORTFOLIO_AGENT_TAG_LIMIT);
+                    if (tags.length > 0) parsed.tags = tags;
+                }
+                if (typeof entry.color === "string" && entry.color.trim()) parsed.color = entry.color.trim();
+                if (entry.align === "left" || entry.align === "center" || entry.align === "right") parsed.align = entry.align;
+                // 只有「改既有元素」或「新增文本」两类有落点；其余是死数据，直接丢。
+                if (parsed.elementId || parsed.kind === "text") elements.push(parsed);
+            }
+        }
+        options.push({
+            name,
+            reason: typeof record.reason === "string" ? record.reason.trim() : "",
+            title: typeof record.title === "string" && record.title.trim() ? record.title.trim() : undefined,
+            pageId: typeof record.pageId === "string" ? record.pageId : undefined,
+            elements,
+        });
+    }
+    return options;
+}
+
+/** 取 localStorage；测试环境没有就返回 null（读取返回空、写入变 no-op）。 */
+function layoutResultStorage(): Storage | null {
+    try {
+        return (globalThis as { localStorage?: Storage }).localStorage ?? null;
+    } catch {
+        return null;
+    }
+}
+
+/** 按文档 remoteId 读回上次持久化的版式方案，仍按契约收窄；缺失/损坏/无存储一律返回空数组，不抛错。 */
+export function readStoredPortfolioLayoutOptions(documentRemoteId: string): PortfolioLayoutOption[] {
+    if (!documentRemoteId) return [];
+    const storage = layoutResultStorage();
+    if (!storage) return [];
+    try {
+        const raw = storage.getItem(`pf-agent-layouts:${documentRemoteId}`);
+        if (!raw) return [];
+        const parsed: unknown = JSON.parse(raw);
+        const record = parsed && typeof parsed === "object" ? (parsed as { options?: unknown }) : null;
+        return parsePortfolioLayoutOptions(record?.options);
+    } catch {
+        return [];
+    }
+}
+
+/** 持久化本轮版式方案（新运行整体覆盖）。传空数组 = 清除：方案被应用或放弃后，刷新不该把旧卡片复活。 */
+export function persistPortfolioLayoutOptions(documentRemoteId: string, options: readonly PortfolioLayoutOption[]): void {
+    if (!documentRemoteId) return;
+    const storage = layoutResultStorage();
+    if (!storage) return;
+    try {
+        if (options.length === 0) storage.removeItem(`pf-agent-layouts:${documentRemoteId}`);
+        else storage.setItem(`pf-agent-layouts:${documentRemoteId}`, JSON.stringify({ at: new Date().toISOString(), options: Array.from(options) }));
+    } catch {
+        // localStorage 配额/隐私模式可能抛错：放弃刷新后恢复即可，不阻断主流程。
+    }
+}
+
 /** 工具名 → 界面进度文案。没映射的工具不进进度条，避免把内部工具名抖给用户。 */
 const PORTFOLIO_AGENT_TOOL_STAGES: Record<string, string> = {
     portfolio_read_document: "正在读取作品集页面…",
     portfolio_inspect_image: "正在查看图片画面…",
     portfolio_propose_annotations: "正在整理分类建议…",
+    portfolio_propose_layouts: "正在构思版式方案…",
 };
 
 export type PortfolioAgentRunOptions = {
@@ -200,6 +319,7 @@ export async function runPortfolioAnnotationAgent(options: PortfolioAgentRunOpti
     const created = await createAgentRun(request);
     const runId = created.run.id;
     const proposals: PortfolioAnnotationProposal[] = [];
+    const layoutOptions: PortfolioLayoutOption[] = [];
     let summary = "";
     let reasoning = "";
     let failureMessage = "";
@@ -235,6 +355,11 @@ export async function runPortfolioAnnotationAgent(options: PortfolioAgentRunOpti
                         // 后端在事件里已经做过元素存在性与长度校验，这里只做形状收窄。
                         proposals.push(...parsePortfolioAnnotationProposals(event.payload?.items));
                         report("已收到分类建议…");
+                        break;
+                    }
+                    case "portfolio_layouts_proposed": {
+                        layoutOptions.push(...parsePortfolioLayoutOptions(event.payload?.options));
+                        report("已收到版式方案…");
                         break;
                     }
                     case "assistant_delta": {
@@ -312,7 +437,7 @@ export async function runPortfolioAnnotationAgent(options: PortfolioAgentRunOpti
 
     if (status === "failed" && !failureMessage) failureMessage = "Agent 运行失败";
     if (status === "cancelled") failureMessage = "";
-    return { proposals, summary, reasoning, status, failureMessage };
+    return { proposals, layoutOptions, summary, reasoning, status, failureMessage };
 }
 
 /** 取消运行只吞掉失败：用户已经按了停止，这里再报一个错误没有意义。 */

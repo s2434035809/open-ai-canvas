@@ -8,7 +8,7 @@
 
 import { create } from "zustand";
 
-import { PORTFOLIO_MAX_DOC_BYTES, type PortfolioAlignMode, type PortfolioDocument, type PortfolioElementPatch, type PortfolioPage } from "./contracts";
+import { PORTFOLIO_MAX_DOC_BYTES, type PortfolioAlignMode, type PortfolioDocument, type PortfolioElement, type PortfolioElementPatch, type PortfolioPage } from "./contracts";
 import { arrangeInGrid, alignElements, createImageElement, createPortfolioPage, createTextElement, findPageIndexById, nextZIndex, normalizeZIndex, removeElements, reorderElements, updateElements, type PortfolioZOrderAction } from "./document";
 
 /** 历史快照上限；作品集文档体积大，保留太多会明显吃内存。 */
@@ -63,6 +63,8 @@ export type PortfolioStoreState = {
     updateSelected: (patch: PortfolioElementPatch) => void;
     /** 一次性套用多个元素的补丁，只产生一条撤销记录（Agent 批量回写用）。 */
     applyElementPatches: (patches: ReadonlyMap<string, PortfolioElementPatch>) => void;
+    /** 版式方案落地：补丁既有元素 + 追加新元素，同属一次撤销记录（Agent 选定方案后回写用）。 */
+    applyLayoutChanges: (changes: { patches: ReadonlyMap<string, PortfolioElementPatch>; newElements: readonly PortfolioElement[] }) => void;
     removeSelected: () => void;
     duplicateSelected: () => void;
     reorderSelected: (action: PortfolioZOrderAction) => void;
@@ -357,6 +359,20 @@ export const usePortfolioStore = create<PortfolioStoreState>((set, get) => {
         applyElementPatches: (patches) => {
             if (patches.size === 0) return;
             mutateCurrentPage((page) => updateElements(page, patches));
+        },
+
+        applyLayoutChanges: ({ patches, newElements }) => {
+            if (patches.size === 0 && newElements.length === 0) return;
+            commit((document, pageIndex) => {
+                const target = currentPage(document, pageIndex);
+                if (!target) return { document };
+                let elements = patches.size > 0 ? updateElements(target, patches).elements : target.elements;
+                if (newElements.length > 0) {
+                    let zIndex = nextZIndex(target.elements);
+                    elements = [...elements, ...newElements.map((element) => ({ ...element, zIndex: zIndex++ }))];
+                }
+                return { document: replacePage(document, pageIndex, { ...target, elements }) };
+            });
         },
 
         removeSelected: () => {

@@ -1,19 +1,34 @@
 /**
- * 作品集工作台样式。
+ * 作品集工作台样式（Stitch 画廊风）。
  *
- * 只用少量无法用原子类表达的规则：画布容器需要一张低对比网格底纹来提示"这是一块
- * 可缩放的工作区"，以及导入等待时的骨架背景。
+ * .pf-gallery 是作品集页面局部的暗色主题令牌：近黑画布 + 白色页面"印版" +
+ * 等宽微标签。只作用于作品集子树，不外泄到全局主题。
+ *
+ * .portfolio-stage 是画布容器：近黑底 + 低对比白色点阵网格 + 120px 淡主线。
  */
 
-.portfolio-stage {
+.pf-gallery {
+    --background: #0b0c0e;
+    --foreground: #ecedef;
+    --muted: #101114;
+    --muted-foreground: rgba(236, 237, 239, 0.55);
+    --card: #141518;
+    --border: rgba(255, 255, 255, 0.1);
+    --input: rgba(255, 255, 255, 0.12);
+    --ring: #2563eb;
+}
+
+.pf-gallery .portfolio-stage {
     position: absolute;
     inset: 0;
     overflow: hidden;
-    background-color: var(--muted);
-    background-image: linear-gradient(to right, color-mix(in oklab, var(--foreground) 6%, transparent) 1px, transparent 1px), linear-gradient(to bottom, color-mix(in oklab, var(--foreground) 6%, transparent) 1px, transparent 1px);
-    background-size: 24px 24px;
+    background-color: #0b0c0e;
+    background-image: radial-gradient(circle, rgba(255, 255, 255, 0.13) 1px, transparent 1.4px),
+        linear-gradient(to right, rgba(255, 255, 255, 0.04) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+    background-size: 24px 24px, 120px 120px, 120px 120px;
 }
 
-.portfolio-stage:focus-visible {
+.pf-gallery .portfolio-stage:focus-visible {
     outline: none;
 }

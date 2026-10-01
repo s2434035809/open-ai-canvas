@@ -32,7 +32,7 @@ description: 从产品功能快速定位主要代码入口
 | 技能库 | `web/src/pages/skills/` | `services/api/skills.ts`、`services/skill-runtime.ts`、`components/skills/skill-runtime-picker.tsx` |
 | 画布列表 | `web/src/pages/canvas/index.tsx` | `stores/canvas/use-canvas-store.ts` |
 | 画布编辑器 | `web/src/pages/canvas/project.tsx` | `pages/canvas/canvas-project-*`、`pages/canvas/use-canvas-*`、`components/canvas/`、`lib/canvas/`、`stores/canvas/` |
-| 作品集工作台 | `web/src/pages/portfolio/index.tsx` | `components/portfolio/`、`lib/portfolio/`（`contracts.ts` 文档契约与壳画布 ID 派生、`agent-run.ts` 内置云 Agent 适配、`export/` 导出）；后端 `app/portfolio.go` 文档 CRUD、`app/portfolio_agent.go` 壳画布与作品集 Agent 工具、`handler/portfolio.go` 为 HTTP 边界 |
+| 作品集工作台 | `web/src/pages/portfolio/index.tsx` | `components/portfolio/`（`portfolio-layout-thumbnail.tsx` 版式缩略图、`portfolio-agent-panel.tsx` 建议/版式确认面板）、`lib/portfolio/`（`contracts.ts` 文档契约与壳画布 ID 派生、`agent-run.ts` 内置云 Agent 适配与版式方案解析、`store.ts` `applyLayoutChanges` 撤销记录、`export/` 导出）；后端 `app/portfolio.go` 文档 CRUD、`app/portfolio_agent.go` 壳画布与作品集 Agent 工具（读 / 看图 / 建议图注 / 版式方案）、`handler/portfolio.go` 为 HTTP 边界 |
 | 公开分享 | `web/src/pages/canvas/shared.tsx` | `components/canvas/infinite-canvas.tsx`、`services/api/canvas-share.ts` |
 | 管理后台 | `web/src/pages/admin/`、`router.tsx` | `admin-context.tsx`、`users/`、`channels/`、`logs/`、`storyboard-prompts/`、`settings/`、`components/agent-lessons-panel.tsx` |
 | 支付 CSV 导出 | `web/src/pages/admin/payments/payments-page.tsx` | `services/api/payments.ts`、`AdminExportButton`；后端 `handler/payment_export.go`、`app/payment_export.go`、`repository/payment_export.go`（共享筛选、只读快照） |

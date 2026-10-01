@@ -19,7 +19,7 @@ import { PORTFOLIO_EXPORT_MAX_AREA, PORTFOLIO_EXPORT_MAX_EDGE, type PortfolioExp
 export type CanvasFactory = () => HTMLCanvasElement;
 
 /** 图注条的字体：图片元素没有自己的字体设置，统一用文档默认字体栈。 */
-const CAPTION_FONT_FAMILY = "Inter, system-ui, sans-serif";
+const CAPTION_FONT_FAMILY = "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
 const CAPTION_PADDING = 12;
 
 export class PortfolioCanvasLimitError extends Error {
@@ -107,23 +107,21 @@ function drawImageElement(ctx: CanvasRenderingContext2D, element: PortfolioImage
     if (entry && params) {
         ctx.drawImage(entry.image, params.sx, params.sy, params.sw, params.sh, params.dx, params.dy, params.dw, params.dh);
     }
-    drawCaptionBar(ctx, element, options);
+    drawCaptionText(ctx, element, options);
 }
 
-/** 图注条压在图片下沿，不改变元素几何，因此不会影响版式还原。 */
-function drawCaptionBar(ctx: CanvasRenderingContext2D, element: PortfolioImageElement, options: PortfolioExportOptions) {
+/** 图注是图片下方的等宽小字（画廊版式），不再压深色条盖住画面。 */
+function drawCaptionText(ctx: CanvasRenderingContext2D, element: PortfolioImageElement, options: PortfolioExportOptions) {
     const text = captionText(element, options);
     if (!text || !(element.width > 0)) return;
     const barHeight = captionBarHeight(element.height);
     const fontSize = captionFontSize(barHeight);
-    const top = element.y + element.height - barHeight;
+    const top = element.y + element.height + 4;
 
     ctx.save();
-    ctx.fillStyle = "rgba(15, 23, 42, 0.62)";
-    ctx.fillRect(element.x, top, element.width, barHeight);
     ctx.font = `500 ${fontSize}px ${CAPTION_FONT_FAMILY}`;
-    ctx.fillStyle = "#ffffff";
-    ctx.textBaseline = "middle";
+    ctx.fillStyle = "#475569";
+    ctx.textBaseline = "top";
     ctx.textAlign = "left";
 
     const available = element.width - CAPTION_PADDING * 2;
@@ -134,7 +132,7 @@ function drawCaptionBar(ctx: CanvasRenderingContext2D, element: PortfolioImageEl
         while (characters.length > 0 && ctx.measureText(`${characters.join("")}…`).width > available) characters.pop();
         label = characters.length > 0 ? `${characters.join("")}…` : "";
     }
-    if (label) ctx.fillText(label, element.x + CAPTION_PADDING, top + barHeight / 2);
+    if (label) ctx.fillText(label, element.x + CAPTION_PADDING, top);
     ctx.restore();
 }
 
