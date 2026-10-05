@@ -647,6 +647,12 @@
     text-align: center;
 }
 
+.site-compliance-footer > span {
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+}
+
 .site-compliance-footer a {
     display: inline-flex;
     align-items: center;
@@ -9983,9 +9989,9 @@ html:not(.dark) .canvas-generation-settings-trigger.ant-btn[aria-expanded="true"
         font-size: 0.92em;
         font-weight: 500;
         line-height: 1;
-        vertical-align: baseline;
+        vertical-align: middle;
         user-select: none;
-        transform: translateY(var(--canvas-mention-chip-offset-y));
+        transform: translateY(-0.08em);
     }
 
     .canvas-resource-inline-skill-icon {
@@ -17028,6 +17034,31 @@ html:not(.dark) .creation-home .creation-user-message-copy-wrap { box-shadow: 0 
     font-size: 11px;
 }
 
+.workspace-wallet-redeem-link {
+    display: inline-flex;
+    align-items: center;
+    margin-left: 8px;
+    border-radius: 6px;
+    background: var(--user-accent-soft);
+    padding: 3px 9px;
+    color: var(--user-accent) !important;
+    font-size: 13px;
+    font-weight: 650;
+    line-height: 1.5;
+    text-decoration: none;
+    white-space: nowrap;
+}
+
+.workspace-wallet-redeem-link:hover {
+    background: color-mix(in srgb, var(--user-accent) 16%, transparent);
+    text-decoration: underline;
+}
+
+.workspace-wallet-redeem-link:focus-visible {
+    outline: 2px solid var(--user-accent);
+    outline-offset: 2px;
+}
+
 .workspace-wallet-section-heading > svg {
     width: 20px;
     height: 20px;
@@ -18780,12 +18811,13 @@ html:not(.dark) .creation-home .creation-user-message-copy-wrap { box-shadow: 0 
     box-shadow: none !important;
 }
 
-.ant-select.app-unified-select .ant-select-arrow {
+.ant-select.app-unified-select .ant-select-suffix {
+    margin-inline-end: 10px !important;
     color: color-mix(in srgb, var(--foreground) 48%, transparent) !important;
     transition: color var(--motion-state, 180ms) ease, transform var(--motion-state, 180ms) ease !important;
 }
 
-.ant-select.app-unified-select.ant-select-open .ant-select-arrow {
+.ant-select.app-unified-select.ant-select-open .ant-select-suffix {
     color: color-mix(in srgb, var(--foreground) 72%, transparent) !important;
 }
 
