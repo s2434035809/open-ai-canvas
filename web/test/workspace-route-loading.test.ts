@@ -35,8 +35,10 @@ describe("workspace route loading", () => {
         const router = source("../src/router.tsx");
         const navigation = source("../src/components/layout/workspace-sidebar-nav.tsx");
 
-        expect(router).toContain('{ path: "/", element: <RequireAuth>{deferred(<CreatePage />)}</RequireAuth> }');
-        expect(router).toContain('{ path: "/create", element: <RequireAuth>{deferred(<CreatePage />)}</RequireAuth> }');
+        expect(router).toContain('path: "/", element: deferred(<CreatePage />)');
+        expect(router).toContain('path: "/create", element: deferred(<CreatePage />)');
+        // 1.6.1 访客工作台：根路由不再直接包 RequireAuth，改由 AuthenticatedWorkspaceLayout
+        // 的 allowAnonymous（isGuestWorkspacePath）承载未登录访问。
         expect(router).not.toContain('path: "/home"');
         expect(router).not.toContain("HomePage");
         expect(navigation).toContain('{ ...toolItem("create", "/"), id: "home", title: "创作" }');
