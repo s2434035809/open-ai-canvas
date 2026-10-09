@@ -1,5 +1,6 @@
 import localforage from "localforage";
 
+import { toStorableBlob } from "@/lib/storable-blob";
 import { getActiveUserScope } from "@/lib/user-scope";
 import { getResourceBlob, resourceIdFromStorageKey } from "@/services/api/resources";
 
@@ -165,7 +166,7 @@ async function persistBlob(target: ResourceCacheMeta, blob: Blob) {
     await evictFor(blob.size, target.key);
 
     const write = async () => {
-        await blobStore.setItem(target.key, blob);
+        await blobStore.setItem(target.key, toStorableBlob(blob));
         await metaStore.setItem(target.key, {
             ...target,
             size: blob.size,
