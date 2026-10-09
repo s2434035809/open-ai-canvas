@@ -7,7 +7,7 @@ import (
 
 	"gorm.io/gorm"
 
-	"infinite-canvas/backend/internal/model"
+	"yingce/backend/internal/model"
 )
 
 // 作品集 Agent 的工具契约与数据投影：壳画布 ID 解析、工具注册门控、

@@ -47,6 +47,7 @@ function buildNav(features: FeatureAvailability, isAdmin: boolean, portfolioEnab
         {
             items: [
                 { ...toolItem("create", "/"), id: "home", title: "创作" },
+                { ...toolItem("inspirations", "/inspirations"), title: "灵感" },
                 { ...toolItem("projects", "/projects"), title: "短剧 Agent" },
                 { ...toolItem("canvas", "/canvas"), title: "自由画布" },
             ],
