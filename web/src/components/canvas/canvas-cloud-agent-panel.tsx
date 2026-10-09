@@ -797,7 +797,15 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, se
     };
 
     const submitApproval = async (decision: "approve" | "reject", mediaSettings?: AgentMediaSettings) => {
-        if (!run || !approval || connectionStatus !== "connected" || approvalRequestRef.current === approval.approvalId) return;
+        if (!run || !approval || approvalRequestRef.current === approval.approvalId) return;
+        if (connectionStatus !== "connected") {
+            // 事件流未就绪时按钮本就是禁用的，这里兜住「渲染到点击之间掉线」的竞态。
+            // 仍然要给出可见反馈，否则用户看到的就是「点了没反应」。
+            setMessages((current) =>
+                appendAgentError(current, `approval-offline-${approval.approvalId}`, new Error("Agent 事件流未就绪"), "审批未提交：事件流正在重连，恢复后请再点一次"),
+            );
+            return;
+        }
         const runId = run.id;
         const approvalId = approval.approvalId;
         const scope = conversationScope;
@@ -1051,7 +1059,7 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, se
                                     />
                                     {run && connectionStatus !== "connected" ? (
                                         <div role="status" className="flex items-center justify-between gap-2 px-5 py-2 text-xs" style={{ color: theme.node.muted }}>
-                                            <span>{connectionStatus === "disconnected" ? "连接已断开，服务端任务可能仍在执行；运行记录已保留" : "正在连接并校准运行状态…"}</span>
+                                            <span>{connectionStatus === "disconnected" ? "连接已断开，服务端任务可能仍在执行；运行记录已保留" : "正在连接并校准运行状态，连接就绪后才能审批与发送…"}</span>
                                             {connectionStatus === "disconnected" ? (
                                                 <Button size="small" onClick={() => setConnectionEpoch((value) => value + 1)}>
                                                     重新连接
