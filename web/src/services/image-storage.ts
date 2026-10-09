@@ -5,7 +5,7 @@ import { readImageMeta } from "@/lib/image-utils";
 import { getActiveUserScope } from "@/lib/user-scope";
 import { getResourceAccess, importResourceFromUrl, isResourceUrl, resolveResourceAccessURL, resourceFileUrl, resourceIdFromStorageKey, resourceStorageKey, ResourceUploadError, uploadResourceFile } from "@/services/api/resources";
 import { getCachedResourceBlob, primeResourceBlobCache } from "@/services/resource-blob-cache";
-import { toStorableBlob } from "@/lib/storable-blob";
+import { toBlobOrNull, toStorableBlob } from "@/lib/storable-blob";
 
 export type UploadedImage = {
     url: string;
@@ -87,7 +87,7 @@ export async function resolveImageUrl(storageKey?: string, fallback = "", option
     }
     const cached = objectUrls.get(storageKey);
     if (cached) return cached;
-    const blob = await store.getItem<Blob>(storageKey);
+    const blob = toBlobOrNull(await store.getItem(storageKey));
     if (!blob) return fallback;
     const url = URL.createObjectURL(blob);
     objectUrls.set(storageKey, url);
@@ -96,7 +96,7 @@ export async function resolveImageUrl(storageKey?: string, fallback = "", option
 
 export async function getImageBlob(storageKey: string) {
     if (resourceIdFromStorageKey(storageKey)) return getCachedResourceBlob(storageKey);
-    return store.getItem<Blob>(storageKey);
+    return toBlobOrNull(await store.getItem(storageKey));
 }
 
 export async function setImageBlob(storageKey: string, blob: Blob) {
@@ -159,7 +159,8 @@ function blobToDataUrl(blob: Blob) {
 }
 
 async function normalizeImageBlob(blob: Blob, sourceName = "") {
-    if (blob.type.startsWith("image/")) return blob;
+    // normalizeImageBlob 的入参可能来自调用方直接构造的对象，这里不能假设 type 存在。
+    if (typeof blob.type === "string" && blob.type.startsWith("image/")) return blob;
     const bytes = new Uint8Array(await blob.slice(0, 32).arrayBuffer());
     const mimeType = detectImageMimeType(bytes) || imageMimeTypeFromName(sourceName);
     if (!mimeType) throw new Error("无法识别参考图片格式，请重新上传 PNG、JPEG、WebP 或 GIF 图片");

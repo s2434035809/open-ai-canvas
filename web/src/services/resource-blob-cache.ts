@@ -1,6 +1,6 @@
 import localforage from "localforage";
 
-import { toStorableBlob } from "@/lib/storable-blob";
+import { toBlobOrNull, toStorableBlob } from "@/lib/storable-blob";
 import { getActiveUserScope } from "@/lib/user-scope";
 import { getResourceBlob, resourceIdFromStorageKey } from "@/services/api/resources";
 
@@ -109,7 +109,7 @@ export async function primeResourceBlobCache(storageKey: string, blob: Blob) {
 export async function getCachedResourceBlob(storageKey: string) {
     const target = await cacheTarget(storageKey);
     if (!target) return null;
-    const cached = await blobStore.getItem<Blob>(target.key);
+    const cached = toBlobOrNull(await blobStore.getItem(target.key));
     if (cached) {
         touchCacheMetaSafely(target);
         return cached;
@@ -119,12 +119,12 @@ export async function getCachedResourceBlob(storageKey: string) {
     const pending = inFlight.get(target.key);
     if (pending) {
         await pending.catch(() => "");
-        const downloaded = sessionBlobs.get(target.key) || (await blobStore.getItem<Blob>(target.key));
+        const downloaded = sessionBlobs.get(target.key) || (toBlobOrNull(await blobStore.getItem(target.key)));
         if (downloaded) return downloaded;
         return loadAndPersistResource(storageKey);
     }
     await cacheResourceObjectUrl(storageKey).catch(() => "");
-    const downloaded = sessionBlobs.get(target.key) || (await blobStore.getItem<Blob>(target.key));
+    const downloaded = sessionBlobs.get(target.key) || (toBlobOrNull(await blobStore.getItem(target.key)));
     if (downloaded) return downloaded;
     return loadAndPersistResource(storageKey);
 }
@@ -210,7 +210,7 @@ async function readCachedObjectUrl(target: ResourceCacheMeta) {
         touchCacheMetaSafely(target);
         return existing;
     }
-    const blob = await blobStore.getItem<Blob>(target.key);
+    const blob = toBlobOrNull(await blobStore.getItem(target.key));
     if (!blob) return "";
     touchCacheMetaSafely(target);
     return objectUrl(target.key, blob);
