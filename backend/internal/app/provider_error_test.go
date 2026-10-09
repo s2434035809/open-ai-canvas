@@ -1,6 +1,7 @@
 package app
 
 import (
+	"net/http"
 	"strings"
 	"testing"
 )
@@ -107,5 +108,25 @@ func TestProviderPayloadBusinessFailureIgnoresPendingOutput(t *testing.T) {
 		"request_id": "req-1",
 	}); failed {
 		t.Fatalf("pending output marked failed: (%q, %q)", code, message)
+	}
+}
+
+func TestProviderHTTPErrorReportsQuotaInsteadOfAuth(t *testing.T) {
+	const want = "模型服务额度不足，请检查渠道余额或配额"
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusTooManyRequests} {
+		err := providerHTTPError{StatusCode: status, Body: `{"error":{"code":"insufficient_user_quota","message":"用户额度不足, 剩余额度: ¥-0.07"}}`}
+		if got := err.Error(); got != want {
+			t.Fatalf("status %d: got %q, want %q", status, got, want)
+		}
+	}
+	// 真·鉴权失败不能被误报成余额问题。
+	err := providerHTTPError{StatusCode: http.StatusUnauthorized, Body: `{"error":{"message":"Invalid API key provided","code":"invalid_api_key"}}`}
+	if got := err.Error(); got != "模型服务鉴权失败，请检查 API Key 和模型权限" {
+		t.Fatalf("invalid key: got %q", got)
+	}
+	// DeepSeek 的工具消息协议错误必须保持原类目，不能落进额度提示。
+	err = providerHTTPError{StatusCode: http.StatusBadRequest, Body: `{"error":{"message":"An assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id'. (insufficient tool messages following tool_calls message)"}}`}
+	if got := err.Error(); !strings.Contains(got, "工具调用与结果不匹配") {
+		t.Fatalf("tool protocol error: got %q", got)
 	}
 }

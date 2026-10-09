@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"infinite-canvas/backend/internal/model"
+
+	"gorm.io/gorm"
 )
 
 // Canvas 数据访问层扩展
@@ -21,7 +23,29 @@ func (r *Repository) Canvas(userID, canvasID string) (model.Canvas, error) {
 }
 
 // GetCanvas is the explicit repository name used by Agent policy builders.
+// 画布内容实际保存在 canvas_projects；旧 canvas 表在自托管部署中并不存在。
+// 这里以 canvas_projects 为准，只有旧表存在时才回退，避免权限查询失败后
+// 退化成只读权限，让 Agent 无法写入画布。
 func (r *Repository) GetCanvas(userID, canvasID string) (model.Canvas, error) {
+	var project model.CanvasProject
+	err := r.db.Where("user_id = ? AND id = ?", userID, canvasID).First(&project).Error
+	if err == nil {
+		return model.Canvas{
+			ID:        project.ID,
+			UserID:    project.UserID,
+			Name:      project.Title,
+			CreatedAt: project.CreatedAt,
+			UpdatedAt: project.UpdatedAt,
+		}, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return model.Canvas{}, fmt.Errorf("get canvas project: %w", err)
+	}
+	// 旧 canvas 表只在历史部署里存在；自托管库没有它，此时按“找不到画布”返回，
+	// 不要把一个缺表错误冒泡成 500 语义。
+	if !r.db.Migrator().HasTable(&model.Canvas{}) {
+		return model.Canvas{}, fmt.Errorf("get canvas: %w", gorm.ErrRecordNotFound)
+	}
 	return r.Canvas(userID, canvasID)
 }
 

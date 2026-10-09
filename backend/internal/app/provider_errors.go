@@ -125,7 +125,31 @@ func withProviderRequestKind(ctx context.Context, requestKind string) context.Co
 	return context.WithValue(ctx, providerAnalyticsKey{}, metadata)
 }
 
+// 渠道额度不足经常以 401/403 返回（例如中转站的 insufficient_user_quota）。
+// 只按状态码提示“鉴权失败”会把用户引去反复检查 API Key，所以先按正文识别
+// 额度类原因。这里只认稳定的错误码/短语，不做宽泛的 “insufficient” 匹配，
+// 避免把 DeepSeek 的 “insufficient tool messages” 协议错误误报成余额问题。
+func providerQuotaDeniedMessage(raw string) string {
+	normalized := strings.ToLower(strings.TrimSpace(raw))
+	if normalized == "" {
+		return ""
+	}
+	for _, marker := range []string{
+		"insufficient_user_quota", "insufficient quota", "insufficient balance",
+		"quota exceeded", "exceeded your current quota", "arrears",
+		"额度不足", "余额不足", "欠费",
+	} {
+		if strings.Contains(normalized, marker) {
+			return "模型服务额度不足，请检查渠道余额或配额"
+		}
+	}
+	return ""
+}
+
 func (e providerHTTPError) Error() string {
+	if message := providerQuotaDeniedMessage(e.Body); message != "" {
+		return message
+	}
 	if e.StatusCode == http.StatusBadRequest || e.StatusCode == http.StatusUnprocessableEntity {
 		return providerErrorWithDetail(e.summary(), e.Body)
 	}
