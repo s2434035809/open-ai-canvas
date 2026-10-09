@@ -39,12 +39,15 @@ export function resourceKindFromMime(type: unknown): ResourceKind {
     return "file";
 }
 
-/** 本地媒体内容已经不可读（内容丢失）时抛出：重传不可能成功，调用方应跳过而不是整批失败。 */
+/**
+ * 本机媒体库内容不可用时抛出：既可能是 localforage 拍平过的脏记录，也可能是 DX OS
+ * 沙箱里被清空的可丢失缓存。两种情况重传都不可能成功，调用方应跳过这一条而不是整批失败。
+ */
 export class UnreadableLocalMediaError extends Error {
     readonly storageKey: string;
 
     constructor(storageKey: string) {
-        super(`本地媒体已损坏，无法同步：${storageKey}`);
+        super(`本地媒体不可用（内容已丢失或不存在），无法同步：${storageKey}`);
         this.name = "UnreadableLocalMediaError";
         this.storageKey = storageKey;
     }
@@ -148,7 +151,7 @@ export async function ensureRemoteResourceReferences<T>(value: T, uploaded = new
         // 内容已经读不出来的本地媒体重传也不会成功；跳过这一条但保留原引用，
         // 否则整批用户数据（画布保存、Agent 提交）会被一条坏记录永久卡死。
         if (!(error instanceof UnreadableLocalMediaError)) throw error;
-        console.warn("本地媒体已损坏，已跳过同步", { storageKey });
+        console.warn("本地媒体不可用，已跳过同步", { storageKey });
         return next as T;
     }
     uploaded.set(storageKey, resourceStorage);
@@ -192,8 +195,9 @@ export async function inlineMediaUploadIdentity(dataUrl: string) {
 
 export async function uploadLocalStorageKey(storageKey: string, payload: Record<string, unknown>) {
     const stored = storageKey.startsWith("image:") ? await getImageBlob(storageKey) : await getMediaBlob(storageKey);
-    if (!stored) throw new Error(`本地媒体不存在，无法同步：${storageKey}`);
-    const blob = toSyncableBlob(stored);
+    // 本机媒体库不是主数据源（DX OS 规范里 localStorage/IndexedDB 只允许存可丢失的缓存）：
+    // 内容被清空和内容被拍平一样，都重传不可能成功，按同一种"不可用"处理而不是抛裸 Error 卡死整批同步。
+    const blob = stored ? toSyncableBlob(stored) : null;
     if (!blob) throw new UnreadableLocalMediaError(storageKey);
     const resource = await uploadResourceFile(blob, resourceKindFromMime(blob.type), {
         width: numberValue(payload.naturalWidth) || numberValue(payload.width),

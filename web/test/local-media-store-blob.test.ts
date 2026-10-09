@@ -68,7 +68,7 @@ describe("损坏的本地媒体不再产生 TypeError", () => {
         expect(error).toBeInstanceOf(Error);
         expect(error.name).toBe("UnreadableLocalMediaError");
         expect(error.storageKey).toBe("image:u1:abc");
-        expect(error.message).toBe("本地媒体已损坏，无法同步：image:u1:abc");
+        expect(error.message).toBe("本地媒体不可用（内容已丢失或不存在），无法同步：image:u1:abc");
     });
 
     test("同步遇到损坏媒体时跳过这一条，而不是让整批保存失败", () => {
