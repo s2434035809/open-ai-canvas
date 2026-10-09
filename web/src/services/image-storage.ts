@@ -5,6 +5,7 @@ import { readImageMeta } from "@/lib/image-utils";
 import { getActiveUserScope } from "@/lib/user-scope";
 import { getResourceAccess, importResourceFromUrl, isResourceUrl, resolveResourceAccessURL, resourceFileUrl, resourceIdFromStorageKey, resourceStorageKey, ResourceUploadError, uploadResourceFile } from "@/services/api/resources";
 import { getCachedResourceBlob, primeResourceBlobCache } from "@/services/resource-blob-cache";
+import { toStorableBlob } from "@/lib/storable-blob";
 
 export type UploadedImage = {
     url: string;
@@ -67,7 +68,7 @@ export async function uploadImage(input: string | Blob, onProgress?: (uploadedBy
         remoteUploadError = error instanceof Error ? error.message : "图片直传失败";
     }
     // 瞬时失败退回本机：文件仍可用，且云端数据同步会用同一幂等键重传。
-    await store.setItem(storageKey, blob);
+    await store.setItem(storageKey, toStorableBlob(blob));
     const url = previewUrl;
     objectUrls.set(storageKey, url);
     return { url, storageKey, width: meta.width, height: meta.height, bytes: blob.size, mimeType: blob.type || meta.mimeType, pendingRemoteUpload: true, remoteUploadError };
@@ -100,7 +101,7 @@ export async function getImageBlob(storageKey: string) {
 
 export async function setImageBlob(storageKey: string, blob: Blob) {
     if (resourceIdFromStorageKey(storageKey)) return primeResourceBlobCache(storageKey, blob);
-    await store.setItem(storageKey, blob);
+    await store.setItem(storageKey, toStorableBlob(blob));
     const url = URL.createObjectURL(blob);
     objectUrls.set(storageKey, url);
     return url;
