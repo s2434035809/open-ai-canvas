@@ -13,6 +13,43 @@ export function numberValue(value: unknown) {
 
 export const LOCAL_STORAGE_KEY_PATTERN = /^(image|video|audio|file|video-reference|audio-reference):/;
 
+export type ResourceKind = "image" | "video" | "audio" | "file";
+
+/**
+ * 本地媒体库（localforage）的 localStorage 驱动只还原 `[object Blob]`：`File` 是 Blob 的子类，
+ * 标签却是 `[object File]`，写进去会被 JSON 拍平成 `{}`，读回来没有 `type` 也没有内容。
+ * 这里把仍能取到字节的值还原成 Blob，取不到字节的交给调用方按"已损坏"处理。
+ */
+function toSyncableBlob(value: unknown): Blob | null {
+    if (typeof Blob !== "undefined" && value instanceof Blob) return value;
+    if (!value || typeof value !== "object") return null;
+    const candidate = value as { arrayBuffer?: unknown; size?: unknown; type?: unknown };
+    if (typeof candidate.arrayBuffer === "function" && typeof candidate.size === "number") {
+        return new Blob([value as Blob], { type: typeof candidate.type === "string" ? candidate.type : "" });
+    }
+    if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return new Blob([value as BlobPart]);
+    return null;
+}
+
+export function resourceKindFromMime(type: unknown): ResourceKind {
+    if (typeof type !== "string") return "file";
+    if (type.startsWith("image/")) return "image";
+    if (type.startsWith("video/")) return "video";
+    if (type.startsWith("audio/")) return "audio";
+    return "file";
+}
+
+/** 本地媒体内容已经不可读（内容丢失）时抛出：重传不可能成功，调用方应跳过而不是整批失败。 */
+export class UnreadableLocalMediaError extends Error {
+    readonly storageKey: string;
+
+    constructor(storageKey: string) {
+        super(`本地媒体已损坏，无法同步：${storageKey}`);
+        this.name = "UnreadableLocalMediaError";
+        this.storageKey = storageKey;
+    }
+}
+
 export function collectLocalMediaKeys(value: unknown, set = new Set<string>()): string[] {
     if (!value || typeof value !== "object") return [...set];
     if (Array.isArray(value)) {
@@ -104,7 +141,16 @@ export async function ensureRemoteResourceReferences<T>(value: T, uploaded = new
 
     const cached = uploaded.get(storageKey);
     if (cached) return applyResourceReference(next, cached, currentPreserveTextContent) as T;
-    const resourceStorage = await uploadLocalStorageKey(storageKey, next);
+    let resourceStorage: string;
+    try {
+        resourceStorage = await uploadLocalStorageKey(storageKey, next);
+    } catch (error) {
+        // 内容已经读不出来的本地媒体重传也不会成功；跳过这一条但保留原引用，
+        // 否则整批用户数据（画布保存、Agent 提交）会被一条坏记录永久卡死。
+        if (!(error instanceof UnreadableLocalMediaError)) throw error;
+        console.warn("本地媒体已损坏，已跳过同步", { storageKey });
+        return next as T;
+    }
     uploaded.set(storageKey, resourceStorage);
     onUploaded?.();
     return applyResourceReference(next, resourceStorage, currentPreserveTextContent) as T;
@@ -135,8 +181,7 @@ export async function uploadInlineDataUrl(dataUrl: string, identity: string) {
     const response = await fetch(dataUrl);
     if (!response.ok) throw new Error("内嵌媒体读取失败");
     const blob = await response.blob();
-    const kind: "image" | "video" | "audio" | "file" = blob.type.startsWith("image/") ? "image" : blob.type.startsWith("video/") ? "video" : blob.type.startsWith("audio/") ? "audio" : "file";
-    const resource = await uploadResourceFile(blob, kind, { idempotencyKey: identity });
+    const resource = await uploadResourceFile(blob, resourceKindFromMime(blob.type), { idempotencyKey: identity });
     return resourceStorageKey(resource.id);
 }
 
@@ -146,10 +191,11 @@ export async function inlineMediaUploadIdentity(dataUrl: string) {
 }
 
 export async function uploadLocalStorageKey(storageKey: string, payload: Record<string, unknown>) {
-    const blob = storageKey.startsWith("image:") ? await getImageBlob(storageKey) : await getMediaBlob(storageKey);
-    if (!blob) throw new Error(`本地媒体不存在，无法同步：${storageKey}`);
-    const kind = blob.type.startsWith("image/") ? "image" : blob.type.startsWith("video/") ? "video" : blob.type.startsWith("audio/") ? "audio" : "file";
-    const resource = await uploadResourceFile(blob, kind, {
+    const stored = storageKey.startsWith("image:") ? await getImageBlob(storageKey) : await getMediaBlob(storageKey);
+    if (!stored) throw new Error(`本地媒体不存在，无法同步：${storageKey}`);
+    const blob = toSyncableBlob(stored);
+    if (!blob) throw new UnreadableLocalMediaError(storageKey);
+    const resource = await uploadResourceFile(blob, resourceKindFromMime(blob.type), {
         width: numberValue(payload.naturalWidth) || numberValue(payload.width),
         height: numberValue(payload.naturalHeight) || numberValue(payload.height),
         durationMs: numberValue(payload.durationMs),

@@ -6,6 +6,7 @@ import { captureVideoPoster, detectVideoAudioTrackFromBlob } from "@/lib/video-p
 import { getResourceAccess, resolveResourceAccessURL, resourceFileUrl, resourceIdFromStorageKey, resourceStorageKey, ResourceUploadError, uploadResourceFile, type ResourceAccessVariant } from "@/services/api/resources";
 import { uploadImage, type UploadedImage } from "@/services/image-storage";
 import { getCachedResourceBlob, primeResourceBlobCache } from "@/services/resource-blob-cache";
+import { toStorableBlob } from "@/lib/storable-blob";
 
 export type UploadedFile = {
     url: string;
@@ -111,7 +112,7 @@ export async function uploadMediaFile(input: Blob, prefix = "file", onProgress?:
         }
 
         // 瞬时失败退回本机：文件仍可用，且云端数据同步会用同一幂等键重传。
-        await store.setItem(storageKey, blob);
+        await store.setItem(storageKey, toStorableBlob(blob));
         retainPreviewUrl = true;
         objectUrls.set(storageKey, previewUrl);
         return { url: previewUrl, storageKey, bytes: blob.size, mimeType: blob.type || "application/octet-stream", ...meta, preview: poster, pendingRemoteUpload: true, remoteUploadError };
@@ -149,7 +150,7 @@ export async function getMediaBlob(storageKey: string) {
 
 export async function setMediaBlob(storageKey: string, blob: Blob) {
     if (resourceIdFromStorageKey(storageKey)) return primeResourceBlobCache(storageKey, blob);
-    await store.setItem(storageKey, blob);
+    await store.setItem(storageKey, toStorableBlob(blob));
     const url = URL.createObjectURL(blob);
     objectUrls.set(storageKey, url);
     return url;
