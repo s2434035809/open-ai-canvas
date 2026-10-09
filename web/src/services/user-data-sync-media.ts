@@ -5,6 +5,7 @@
 import { getResourceBlob, isResourceUrl, resourceFileUrl, resourceIdFromStorageKey, resourceStorageKey, uploadResourceFile } from "@/services/api/resources";
 import { getImageBlob } from "@/services/image-storage";
 import { getMediaBlob } from "@/services/file-storage";
+import { toBlobOrNull } from "@/lib/storable-blob";
 
 export function numberValue(value: unknown) {
     const number = Number(value);
@@ -15,21 +16,6 @@ export const LOCAL_STORAGE_KEY_PATTERN = /^(image|video|audio|file|video-referen
 
 export type ResourceKind = "image" | "video" | "audio" | "file";
 
-/**
- * 本地媒体库（localforage）的 localStorage 驱动只还原 `[object Blob]`：`File` 是 Blob 的子类，
- * 标签却是 `[object File]`，写进去会被 JSON 拍平成 `{}`，读回来没有 `type` 也没有内容。
- * 这里把仍能取到字节的值还原成 Blob，取不到字节的交给调用方按"已损坏"处理。
- */
-function toSyncableBlob(value: unknown): Blob | null {
-    if (typeof Blob !== "undefined" && value instanceof Blob) return value;
-    if (!value || typeof value !== "object") return null;
-    const candidate = value as { arrayBuffer?: unknown; size?: unknown; type?: unknown };
-    if (typeof candidate.arrayBuffer === "function" && typeof candidate.size === "number") {
-        return new Blob([value as Blob], { type: typeof candidate.type === "string" ? candidate.type : "" });
-    }
-    if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return new Blob([value as BlobPart]);
-    return null;
-}
 
 export function resourceKindFromMime(type: unknown): ResourceKind {
     if (typeof type !== "string") return "file";
@@ -197,7 +183,7 @@ export async function uploadLocalStorageKey(storageKey: string, payload: Record<
     const stored = storageKey.startsWith("image:") ? await getImageBlob(storageKey) : await getMediaBlob(storageKey);
     // 本机媒体库不是主数据源（DX OS 规范里 localStorage/IndexedDB 只允许存可丢失的缓存）：
     // 内容被清空和内容被拍平一样，都重传不可能成功，按同一种"不可用"处理而不是抛裸 Error 卡死整批同步。
-    const blob = stored ? toSyncableBlob(stored) : null;
+    const blob = toBlobOrNull(stored);
     if (!blob) throw new UnreadableLocalMediaError(storageKey);
     const resource = await uploadResourceFile(blob, resourceKindFromMime(blob.type), {
         width: numberValue(payload.naturalWidth) || numberValue(payload.width),

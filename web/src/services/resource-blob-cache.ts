@@ -1,6 +1,6 @@
 import localforage from "localforage";
 
-import { toStorableBlob } from "@/lib/storable-blob";
+import { toBlobOrNull, toStorableBlob } from "@/lib/storable-blob";
 import { getActiveUserScope } from "@/lib/user-scope";
 import { getResourceBlob, resourceIdFromStorageKey } from "@/services/api/resources";
 
@@ -104,7 +104,7 @@ export async function getCachedResourceBlob(storageKey: string) {
     if (!target) return null;
     const sessionBlob = sessionBlobs.get(target.key);
     if (sessionBlob) return sessionBlob;
-    const cached = await blobStore.getItem<Blob>(target.key);
+    const cached = toBlobOrNull(await blobStore.getItem(target.key));
     if (cached) {
         sessionBlobs.set(target.key, cached);
         touchCacheMetaSafely(target);
@@ -203,7 +203,7 @@ async function readCachedObjectUrl(target: ResourceCacheMeta) {
         touchCacheMetaSafely(target);
         return objectUrl(target.key, sessionBlob);
     }
-    const blob = await blobStore.getItem<Blob>(target.key);
+    const blob = toBlobOrNull(await blobStore.getItem(target.key));
     if (!blob) return "";
     sessionBlobs.set(target.key, blob);
     touchCacheMetaSafely(target);

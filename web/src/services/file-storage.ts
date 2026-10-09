@@ -6,7 +6,7 @@ import { captureVideoPoster, detectVideoAudioTrackFromBlob } from "@/lib/video-p
 import { getResourceAccess, resolveResourceAccessURL, resourceFileUrl, resourceIdFromStorageKey, resourceStorageKey, ResourceUploadError, uploadResourceFile, type ResourceAccessVariant } from "@/services/api/resources";
 import { uploadImage, type UploadedImage } from "@/services/image-storage";
 import { getCachedResourceBlob, primeResourceBlobCache } from "@/services/resource-blob-cache";
-import { toStorableBlob } from "@/lib/storable-blob";
+import { toBlobOrNull, toStorableBlob } from "@/lib/storable-blob";
 
 export type UploadedFile = {
     url: string;
@@ -131,7 +131,7 @@ export async function resolveMediaUrl(storageKey?: string, fallback = "", varian
     }
     const cached = objectUrls.get(storageKey);
     if (cached) return cached;
-    const blob = await store.getItem<Blob>(storageKey);
+    const blob = toBlobOrNull(await store.getItem(storageKey));
     if (!blob) return fallback;
     const url = URL.createObjectURL(blob);
     objectUrls.set(storageKey, url);
@@ -145,7 +145,7 @@ export function resolveVideoMediaUrl(storageKey?: string, fallback = "") {
 
 export async function getMediaBlob(storageKey: string) {
     if (resourceIdFromStorageKey(storageKey)) return getCachedResourceBlob(storageKey);
-    return store.getItem<Blob>(storageKey);
+    return toBlobOrNull(await store.getItem(storageKey));
 }
 
 export async function setMediaBlob(storageKey: string, blob: Blob) {
