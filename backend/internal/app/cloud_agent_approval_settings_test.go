@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"gorm.io/gorm"
+
 	"yingce/backend/internal/model"
 )
 
@@ -360,5 +362,156 @@ func TestCloudAgentConversationKeepsRecentRounds(t *testing.T) {
 	}
 	if cloudAgentHistoryUserInstructionCount(childState.TextHistory) < 1 {
 		t.Fatal("trimmed away the conversation")
+	}
+}
+
+// agentImageApprovalFixture 准备一次图片生成审批：图片模型、参考素材与审批参数。
+func agentImageApprovalFixture(t *testing.T) (*Service, *gorm.DB, cloudAgentMediaArgs) {
+	t.Helper()
+	s, db, a := agentMediaFixture(t)
+	capability := DefaultModelCapabilityConfigForModel(string(model.ChannelInterfaceGrokImage), "grok-image")
+	for _, row := range []any{
+		&model.ChannelModel{ID: "grok-image", ChannelID: "channel", ModelKey: "grok-image", DisplayName: "grok-image", Capability: "image", Protocol: model.ChannelInterfaceGrokImage, CapabilityConfigJSON: mustEncodeModelCapabilityConfig(t, capability), BillingMode: "fixed_request", PriceConfigured: true, Enabled: true},
+		&model.ChannelModelPriceTier{ID: "grok-image-tier", ChannelModelID: "grok-image", SelectorKey: "{}", SelectorJSON: "{}", BillingMode: "fixed_request", UnitPriceMicrocredits: 1, PriceConfigured: true, Enabled: true},
+	} {
+		if err := db.Create(row).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	a.Mode, a.ChannelModelKey, a.Duration, a.VideoGenerateAudio = "image", "grok-image", 0, nil
+	a.Size, a.Quality, a.NodeID = "1:1", "2k", "image-shot-1"
+	a.ReferenceNodeIDs = []string{"cat"}
+	return s, db, a
+}
+
+// agentUnrelatedCanvasWrite 模拟审批卡片出现后前端的画布自动保存：画布文本变了，
+// 但本次生成的节点级依赖（目标节点、引用、来源、入边）都没变。
+func agentUnrelatedCanvasWrite(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	var canvas model.CanvasProject
+	if err := db.First(&canvas, "id = ?", "agent-canvas").Error; err != nil {
+		t.Fatal(err)
+	}
+	doc, err := creationDocument(canvas.PayloadJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodes, err := creationObjects(doc["nodes"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata, _ := nodes["hero"]["metadata"].(map[string]any)
+	if metadata == nil {
+		t.Fatal("fixture lost the unrelated reference node")
+	}
+	metadata["note"] = "自动保存写入的展示信息"
+	doc["chatSessions"] = []any{map[string]any{"id": "session-1", "title": "生成队列"}}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&model.CanvasProject{}).Where("id = ?", "agent-canvas").Update("payload_json", string(raw)).Error; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// 回归：审批创建后画布被无关写入改动（前端自动保存），用户再改画幅/质量点“同意执行”。
+// 准入必须按节点级生成依赖判定内容未变，而不是回落到画布级文本哈希。
+// 修复前这条路径必然 409，审批停在 waiting_approval，界面显示“点了没反应”。
+func TestCloudAgentImageApprovalAcceptsEditedSettingsAfterUnrelatedCanvasWrite(t *testing.T) {
+	s, db, a := agentImageApprovalFixture(t)
+	run, _ := agentMediaRun(t, s, a, "request_approval")
+	if err := s.advanceCloudAgentByID("user", run.ID); err != nil {
+		t.Fatal(err)
+	}
+	run, _ = s.repo.CloudAgent("user", run.ID)
+	state, err := cloudAgentDecode(run)
+	if err != nil || state.Approval == nil || state.Approval.Prepared == nil {
+		t.Fatalf("missing prepared image approval: %v", err)
+	}
+	agentUnrelatedCanvasWrite(t, db)
+
+	settings := CloudAgentMediaSettings{ChannelID: "channel", ChannelModelKey: "grok-image", Size: "16:9", Quality: "2k"}
+	if err := s.DecideCloudAgentApproval("user", run.ID, state.Approval.ID, "approve", "", &settings); err != nil {
+		t.Fatalf("unrelated canvas write blocked an edited approval: %v", err)
+	}
+	if err := s.advanceCloudAgentByID("user", run.ID); err != nil {
+		t.Fatal(err)
+	}
+	run, _ = s.repo.CloudAgent("user", run.ID)
+	state, err = cloudAgentDecode(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.MediaTaskID == "" {
+		t.Fatalf("edited approval submitted no task: %+v", state.Events)
+	}
+	task, err := s.repo.TaskForUser("user", state.MediaTaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var input canvasGenerationInput
+	if err := json.Unmarshal([]byte(task.InputJSON), &input); err != nil {
+		t.Fatal(err)
+	}
+	if input.Config.Size != settings.Size || input.Config.Quality != settings.Quality {
+		t.Fatalf("approved settings were lost: %+v", input.Config)
+	}
+}
+
+// 反向边界：放行无关写入不能放宽依赖校验。草稿节点的生成依赖真的变了（提示词被改写），
+// 即使同时改了画幅也必须拒绝，审批保持 waiting_approval 且不产生任务。
+func TestCloudAgentImageApprovalRejectsEditedSettingsAfterDependencyChange(t *testing.T) {
+	s, db, a := agentImageApprovalFixture(t)
+	run, _ := agentMediaRun(t, s, a, "request_approval")
+	if err := s.advanceCloudAgentByID("user", run.ID); err != nil {
+		t.Fatal(err)
+	}
+	run, _ = s.repo.CloudAgent("user", run.ID)
+	state, err := cloudAgentDecode(run)
+	if err != nil || state.Approval == nil || state.Approval.Prepared == nil {
+		t.Fatalf("missing prepared image approval: %v", err)
+	}
+	canvas, err := s.repo.CanvasProjectForUser("user", "agent-canvas")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := creationDocument(canvas.PayloadJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodes, err := creationObjects(doc["nodes"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata, _ := nodes[a.NodeID]["metadata"].(map[string]any)
+	if metadata == nil {
+		t.Fatal("approval did not create the draft node")
+	}
+	metadata["composerContent"] = "用户改写后的草稿提示词"
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(canvas).Update("payload_json", string(raw)).Error; err != nil {
+		t.Fatal(err)
+	}
+	agentUnrelatedCanvasWrite(t, db)
+
+	settings := CloudAgentMediaSettings{ChannelID: "channel", ChannelModelKey: "grok-image", Size: "16:9", Quality: "2k"}
+	if err := s.DecideCloudAgentApproval("user", run.ID, state.Approval.ID, "approve", "", &settings); err == nil {
+		t.Fatal("changed generation dependency accepted an edited approval")
+	}
+	pending, err := s.CloudAgentRun("user", run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending.Status != "waiting_approval" {
+		t.Fatalf("rejected approval changed run status: %s", pending.Status)
+	}
+	var count int64
+	db.Model(&model.Task{}).Where("type = ?", "canvas_image").Count(&count)
+	if count != 0 {
+		t.Fatal("rejected approval submitted a task")
 	}
 }

@@ -647,6 +647,12 @@ func (s *Service) fillCloudAgentMediaSnapshotHash(userID, canvasID string, a *cl
 	return nil
 }
 
+// cloudAgentSameApprovalCall 报告两个调用是否是同一次审批的同一个工具调用。
+// 用户改参数时服务端只改写审批调用的可编辑字段，调用 ID 不变；调用 ID 为空时不认作同一次。
+func cloudAgentSameApprovalCall(expected, actual cloudAgentCall) bool {
+	return expected.ID != "" && expected.ID == actual.ID
+}
+
 // prepareCloudAgentMedia 根据当前运行、画布快照和工具调用解析生成参数及素材。
 // 返回待审批的任务请求、草稿计划或校验错误；此阶段不提交收费任务。
 func (s *Service) prepareCloudAgentMedia(run *model.CloudAgentExecution, state *cloudAgentRuntime, call cloudAgentCall) (CreateTaskRequest, *cloudAgentMediaPlan, error) {
@@ -659,8 +665,14 @@ func (s *Service) prepareCloudAgentMedia(run *model.CloudAgentExecution, state *
 		return CreateTaskRequest{}, nil, err
 	}
 	a.DraftRunID = run.ID
+	// 审批卡里可编辑的模型/画幅/质量被用户改写后，调用内容哈希必然不再等于审批创建时的
+	// CallHash，但它仍是这次审批的同一个工具调用：改的只是生成规格，节点级生成依赖没动。
+	// 沿用审批的 prepared 作为依赖基线，准入就会按 cloudAgentMediaDependencyHash 判定
+	// “内容未变”，而不是回落到画布级文本哈希——任何无关的画布写入（前端自动保存、
+	// 其他草稿节点、聊天会话）都会让文本哈希失效，从而把每次改参审批都误判成 409。
+	// 依赖真变了仍然会被拒绝，见 cloudAgentMediaDocument 与 validateCloudAgentPreparedAdmission。
 	if state.Approval != nil && state.Approval.Prepared != nil &&
-		state.Approval.CallHash == cloudAgentApprovalCallHash(call) {
+		(state.Approval.CallHash == cloudAgentApprovalCallHash(call) || cloudAgentSameApprovalCall(state.Approval.Call, call)) {
 		a.Prepared = state.Approval.Prepared
 	} else if state.AutoPreparedMedia != nil &&
 		state.AutoPreparedCallHash == cloudAgentApprovalCallHash(call) &&
