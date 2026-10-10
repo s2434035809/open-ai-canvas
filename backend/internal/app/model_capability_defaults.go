@@ -27,12 +27,25 @@ func DefaultImageCapabilityConfig(protocol string, modelName string) *ImageCapab
 		MaxOutputs:            15,
 	}
 	switch model.ChannelInterfaceType(protocol) {
-		case model.ChannelInterfaceQwenImage21:
-			// Qwen-Image-2.1 私有服务支持原生透明 PNG，参考图走 ref_images，单次只接受一张输出。
-			image.References.MaxImages = 10
-			image.References.MaskSupported = false
-			image.Quality = ImageQualityConfig{Supported: false, Default: "auto"}
-			image.MaxOutputs = 1
+	case "km-kemei-seedream":
+		image.References.MaxImages = 10
+		image.References.MaskSupported = false
+		presets := kemeiSeedreamImagePresets()
+		values := make([]string, 0, len(presets))
+		for _, preset := range presets {
+			values = append(values, preset.Size)
+		}
+		image.Size = ImageSizeConfig{Parameter: "size", Values: values, Default: "2048x2048", AllowCustom: true, Presets: presets}
+		image.Quality = ImageQualityConfig{Supported: false, Values: []string{}, Default: "auto"}
+		// 透明背景需要带 alpha 的单张参考图，通过插件命名空间显式配置。
+		image.TransparentBackground = VideoBooleanConfig{Supported: false, Default: false}
+		image.MaxOutputs = 1
+	case model.ChannelInterfaceQwenImage21:
+		// Qwen-Image-2.1 私有服务支持原生透明 PNG，参考图走 ref_images，单次只接受一张输出。
+		image.References.MaxImages = 10
+		image.References.MaskSupported = false
+		image.Quality = ImageQualityConfig{Supported: false, Default: "auto"}
+		image.MaxOutputs = 1
 	case model.ChannelInterfaceGrokImage:
 		image.References.MaxImages = 1
 		image.References.MaskSupported = false
