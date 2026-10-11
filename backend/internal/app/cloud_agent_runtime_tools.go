@@ -704,7 +704,12 @@ func (s *Service) advanceCloudAgentTool(run *model.CloudAgentExecution, state *c
 	if allowed && call.Function.Name == "portfolio_inspect_image" && state.Request.VisionEnabled {
 		inspectionResult, inspectionErr = s.prepareCloudAgentPortfolioInspection(run.UserID, state, call)
 		if errors.Is(inspectionErr, errCloudAgentImageInspectionBudget) {
-			return s.failCloudAgent(run, state, cloudAgentImageInspectionBudgetMessage)
+			inspectionErr = &cloudAgentReadLoopError{
+				ToolName:   "portfolio_inspect_image",
+				Count:      state.cloudAgentImageInspectionCalls() + 1,
+				Budget:     true,
+				ReasonCode: "vision_read_budget_exceeded",
+			}
 		}
 	}
 	// Service-backed reads may open resources or use domain repositories.
