@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"log"
 	"strings"
 
 	"yingce/backend/internal/model"
@@ -78,12 +79,13 @@ func (s *Service) updateCloudAgentMediaApproval(repo *repository.Repository, run
 	if err != nil {
 		return err
 	}
-	var resolved map[string]any
-	if err := json.Unmarshal([]byte(task.InputJSON), &resolved); err != nil {
-		return err
-	}
-	requested, _ := req.Input["config"].(map[string]any)
-	if err := validateCloudAgentResolvedMediaOptions(requested, resolved); err != nil {
+	// 常规任务准入负责能力默认值解析：模型目录可能把用户在审批卡里选的画幅/质量归一化成
+	// 它真正支持的规格（自动执行路径同样依赖 applyCloudAgentResolvedMediaDefaults）。
+	// 这里沿用解析后的契约，并把它回写到请求和 plan，使审批预览、报价和真正提交的任务
+	// 共用同一套规格。旧实现在这里直接判「解析后的规格与审批参数不同」并拒绝，用户只要在
+	// 审批卡里改过参数，每次点「同意执行」都会被驳回，审批卡片也就一直关不掉。
+	logCloudAgentResolvedMediaNormalization(run.ID, req.Input["config"], task.InputJSON)
+	if err := applyCloudAgentResolvedMediaDefaults(&req, plan, task); err != nil {
 		return err
 	}
 	name, err := s.cloudAgentMediaModelName(args)
@@ -163,4 +165,35 @@ func validateCloudAgentResolvedMediaOptions(requested, resolvedInput map[string]
 		}
 	}
 	return nil
+}
+
+// cloudAgentResolvedMediaOptionKeys 是任务准入会按模型能力重新解析的生成规格键。
+// 与 validateCloudAgentResolvedMediaOptions 的检查范围保持一致，便于日志对照。
+var cloudAgentResolvedMediaOptionKeys = []string{"size", "imageResolution", "videoSeconds", "vquality", "quality", "count", "videoGenerateAudio", "videoWatermark", "videoArkPrivateAssetUpload"}
+
+// logCloudAgentResolvedMediaNormalization 记录审批改参后被模型目录归一化的规格差异。
+// 归一化不再导致审批提交失败，差异必须留在日志里可追溯。上游 v1.6.8 起权威规格
+// 写在 capabilityOptions（config 保留同名字段），两处都读，避免漏记或被旧值误导。
+func logCloudAgentResolvedMediaNormalization(runID string, requested any, taskInputJSON string) {
+	var resolved struct {
+		CapabilityOptions map[string]any `json:"capabilityOptions"`
+		Config            map[string]any `json:"config"`
+	}
+	if err := json.Unmarshal([]byte(taskInputJSON), &resolved); err != nil {
+		return
+	}
+	resolvedValue := func(key string) string {
+		if value := stringValue(resolved.CapabilityOptions[key]); value != "" {
+			return value
+		}
+		return stringValue(resolved.Config[key])
+	}
+	requestedConfig, _ := requested.(map[string]any)
+	for _, key := range cloudAgentResolvedMediaOptionKeys {
+		value := stringValue(requestedConfig[key])
+		if value == "" || strings.EqualFold(value, resolvedValue(key)) {
+			continue
+		}
+		log.Printf("cloud agent approval normalized media option: run=%s %s=%q resolved=%q", runID, key, value, resolvedValue(key))
+	}
 }

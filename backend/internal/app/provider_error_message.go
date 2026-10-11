@@ -32,12 +32,33 @@ func providerErrorMessageField(value any) string {
 		return strings.TrimSpace(value)
 	case map[string]any:
 		for _, key := range []string{"error", "message", "msg", "detail"} {
+			if key == "error" && providerErrorStatusPhrase(value[key]) {
+				continue
+			}
 			if message := providerErrorMessageField(value[key]); message != "" {
 				return message
 			}
 		}
 	}
 	return ""
+}
+
+// 部分中转站（如红鸟 /v1/videos）在 400 里同时返回 message="参数 seconds 不能为空"
+// 和 error="Bad Request"。error 字段若是裸 HTTP 状态短语，取它只会把真正的
+// 原因盖掉，所以跳过让它落到 message/msg/detail。
+func providerErrorStatusPhrase(value any) bool {
+	text, ok := value.(string)
+	if !ok {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(text)) {
+	case "bad request", "unauthorized", "payment required", "forbidden", "not found",
+		"method not allowed", "conflict", "gone", "unprocessable entity",
+		"too many requests", "internal server error", "bad gateway",
+		"service unavailable", "gateway timeout":
+		return true
+	}
+	return false
 }
 
 func providerErrorWithDetail(fallback, raw string) string {
