@@ -4,6 +4,7 @@ go 1.25.0
 
 require (
 	github.com/aws/aws-sdk-go v1.45.5
+	github.com/casdoor/go-sms-sender v0.25.0
 	github.com/gabriel-vasile/mimetype v1.4.13
 	github.com/gin-gonic/gin v1.12.0
 	github.com/google/uuid v1.5.0
@@ -29,7 +30,6 @@ require (
 	github.com/bytedance/gopkg v0.1.4 // indirect
 	github.com/bytedance/sonic v1.15.2 // indirect
 	github.com/bytedance/sonic/loader v0.5.1 // indirect
-	github.com/casdoor/go-sms-sender v0.25.0 // indirect
 	github.com/cenkalti/backoff/v4 v4.1.2 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/clbanning/mxj v1.8.4 // indirect

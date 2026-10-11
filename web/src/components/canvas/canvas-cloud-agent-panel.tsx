@@ -799,12 +799,11 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, se
     const submitApproval = async (decision: "approve" | "reject", mediaSettings?: AgentMediaSettings) => {
         if (!run || !approval || approvalRequestRef.current === approval.approvalId) return;
         if (connectionStatus !== "connected") {
-            // 事件流未就绪时按钮本就是禁用的，这里兜住「渲染到点击之间掉线」的竞态。
-            // 仍然要给出可见反馈，否则用户看到的就是「点了没反应」。
+            // 审批是写操作，不依赖事件流：观察通道掉线时按钮不再禁用，点击后直接提交，
+            // 由服务端校验审批是否仍然有效。否则掉线期间用户看到的就是「点了没反应」。
             setMessages((current) =>
-                appendAgentError(current, `approval-offline-${approval.approvalId}`, new Error("Agent 事件流未就绪"), "审批未提交：事件流正在重连，恢复后请再点一次"),
+                appendAgentError(current, `approval-offline-${approval.approvalId}`, new Error("Agent 事件流未连接"), "事件流未连接，已直接提交审批；结果以服务端为准"),
             );
-            return;
         }
         const runId = run.id;
         const approvalId = approval.approvalId;
@@ -1059,7 +1058,7 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, se
                                     />
                                     {run && connectionStatus !== "connected" ? (
                                         <div role="status" className="flex items-center justify-between gap-2 px-5 py-2 text-xs" style={{ color: theme.node.muted }}>
-                                            <span>{connectionStatus === "disconnected" ? "连接已断开，服务端任务可能仍在执行；运行记录已保留" : "正在连接并校准运行状态，连接就绪后才能审批与发送…"}</span>
+                                            <span>{connectionStatus === "disconnected" ? "连接已断开，服务端任务可能仍在执行；运行记录已保留" : "正在连接并校准运行状态，审批仍可直接提交…"}</span>
                                             {connectionStatus === "disconnected" ? (
                                                 <Button size="small" onClick={() => setConnectionEpoch((value) => value + 1)}>
                                                     重新连接
@@ -1077,7 +1076,7 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, se
                                         approval={approval}
                                         approvalTargetGenerating={approval ? agentApprovalTargetGenerating(approval.detail, canvasNodes, runningNodeId) : undefined}
                                         nodeCount={nodeCount}
-                                        approvalSubmitting={approvalSubmitting || connectionStatus !== "connected"}
+                                        approvalSubmitting={approvalSubmitting}
                                         onChooseSkill={() => setSkillsOpen(true)}
                                         onDraftPrompt={(draft) => setPrompt((current) => (current.trim() ? `${current}\n\n${draft}` : draft))}
                                         onApprovalReasonChange={(reason) => setApproval((current) => (current ? { ...current, reason } : current))}

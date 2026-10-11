@@ -684,6 +684,9 @@ func channelModelDefaultOptions(channelModel model.ChannelModel, spec Capability
 			return nil, err
 		}
 	}
+	// 默认参数必须落在路由实际强校验的规格内：只有能力声明（或价格档补充）了该选项才能下发，
+	// 否则默认值本身会让整个渠道模型被目录隔离（例如未声明分辨率的视频模型被注入 vquality）。
+	selectable := capabilitySpecWithPriceTiers(spec, channelModel)
 	defaults := make(map[string]any)
 	if config != nil {
 		switch normalizeCapability(channelModel.Capability) {
@@ -700,7 +703,9 @@ func channelModelDefaultOptions(channelModel model.ChannelModel, spec Capability
 		case "video":
 			if config.Video != nil {
 				defaults["videoSeconds"] = config.Video.Duration.Default
-				defaults["vquality"] = normalizeChannelModelTierResolution(config.Video.DefaultResolution)
+				if _, declared := selectable.Options["vquality"]; declared {
+					defaults["vquality"] = normalizeChannelModelTierResolution(config.Video.DefaultResolution)
+				}
 				if len(config.Video.Ratios) > 0 {
 					defaults["size"] = config.Video.DefaultRatio
 				}
@@ -719,7 +724,7 @@ func channelModelDefaultOptions(channelModel model.ChannelModel, spec Capability
 			if !tier.Enabled || !tier.PriceConfigured {
 				continue
 			}
-			if tier.Resolution != "*" {
+			if _, declared := selectable.Options["vquality"]; declared && tier.Resolution != "*" {
 				defaults["vquality"] = normalizeChannelModelTierResolution(tier.Resolution)
 			}
 			if tier.VideoSeconds > 0 {
@@ -728,7 +733,7 @@ func channelModelDefaultOptions(channelModel model.ChannelModel, spec Capability
 			break
 		}
 	}
-	return normalizeLogicalDefaults(spec, defaults)
+	return normalizeLogicalDefaults(selectable, defaults)
 }
 
 func (s *Service) SimulateLogicalModelRoute(actor *model.User, id string, intent ModelRequestIntent) (*RouteSimulationResult, error) {
