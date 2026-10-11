@@ -78,6 +78,10 @@ services:
       CANVAS_LOG_LEVEL: ${CANVAS_LOG_LEVEL:-info}
       CANVAS_LOG_FORMAT: ${CANVAS_LOG_FORMAT:-text}
       GIN_MODE: release
+    # Linux 服务器上容器默认解析不到 host.docker.internal；需要本机（宿主机）服务时，
+    # 用 host-gateway 把它指向 Docker 网桥网关，渠道才能填 http://host.docker.internal:<端口>。
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ${CANVAS_DATA_PATH:-backend-data}:/data
       - ${CANVAS_UPDATER_SOCKET_DIR:-/run/open-ai-canvas-updater}:/run/open-ai-canvas-updater

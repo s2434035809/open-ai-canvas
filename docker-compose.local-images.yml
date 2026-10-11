@@ -1,9 +1,11 @@
 services:
   migrate:
-    image: ghcr.io/ddcat-ai/open-ai-canvas-backend:${CANVAS_IMAGE_TAG:-latest}
+    # 本地后端镜像单独用 CANVAS_BACKEND_TAG 指定，默认回落到 CANVAS_IMAGE_TAG。
+    # 用途：只替换后端（例如打了热修的 1.6.4-hnfix），不必同时改 web 的镜像标签。
+    image: ghcr.io/ddcat-ai/open-ai-canvas-backend:${CANVAS_BACKEND_TAG:-1.6.4}
 
   backend:
-    image: ghcr.io/ddcat-ai/open-ai-canvas-backend:${CANVAS_IMAGE_TAG:-latest}
+    image: ghcr.io/ddcat-ai/open-ai-canvas-backend:${CANVAS_BACKEND_TAG:-1.6.4}
 
   web:
     image: ghcr.io/ddcat-ai/open-ai-canvas-web:${CANVAS_IMAGE_TAG:-latest}

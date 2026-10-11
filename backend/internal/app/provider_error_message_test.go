@@ -13,6 +13,8 @@ func TestProviderErrorDetail(t *testing.T) {
 	for _, tt := range []struct{ name, raw, want string }{
 		{"moderation", `{"error":{"message":"非常抱歉，生成的图片可能违反了关于裸露、色情或情色内容的防护限制。请重试或修改提示语。"}}`, "非常抱歉，生成的图片可能违反了关于裸露、色情或情色内容的防护限制。请重试或修改提示语。"},
 		{"parameter", `{"message":"size must be 1024x1024","request_id":"private","url":"https://private.test"}`, "size must be 1024x1024"},
+		{"status phrase hides message", `{"code":400,"message":"参数 seconds 不能为空","error":"Bad Request"}`, "参数 seconds 不能为空"},
+		{"status phrase only", `{"code":400,"error":"Bad Request"}`, ""},
 		{"url", `{"error":"请修改图片尺寸 https://private.test/path?q=value"}`, "请修改图片尺寸 [链接已隐藏]"},
 		{"detail", `{"detail":"请上传 PNG 图片"}`, "请上传 PNG 图片"},
 		{"plain", "请缩短提示词", "请缩短提示词"},
