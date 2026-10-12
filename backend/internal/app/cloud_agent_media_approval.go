@@ -129,7 +129,7 @@ func replaceCloudAgentPreparedLeases(repo *repository.Repository, userID, runID,
 }
 
 // cloudAgentResolvedMediaOptionKeys 是任务准入会按模型能力重新解析的生成规格键。
-var cloudAgentResolvedMediaOptionKeys = []string{"size", "videoSeconds", "vquality", "quality", "count", "videoGenerateAudio"}
+var cloudAgentResolvedMediaOptionKeys = []string{"size", "videoSeconds", "vquality", "quality", "count", "videoGenerateAudio", "videoWatermark", "videoArkPrivateAssetUpload"}
 
 func validateCloudAgentResolvedMediaOptions(requested, resolved map[string]any) error {
 	for _, key := range cloudAgentResolvedMediaOptionKeys {
