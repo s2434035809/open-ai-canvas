@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"gorm.io/gorm"
+
 	"yingce/backend/internal/model"
 )
 
@@ -253,6 +254,117 @@ func TestCloudAgentImageApprovalEditsAreValidatedAndIdempotent(t *testing.T) {
 	}
 }
 
+func TestCloudAgentVideoApprovalEditsAreValidatedAndApplied(t *testing.T) {
+	s, db, args := agentMediaFixture(t)
+	run, _ := agentMediaRun(t, s, args, "request_approval")
+	if err := s.advanceCloudAgentByID("user", run.ID); err != nil {
+		t.Fatal(err)
+	}
+	run, _ = s.repo.CloudAgent("user", run.ID)
+	state, err := cloudAgentDecode(run)
+	if err != nil || state.Approval == nil {
+		t.Fatalf("missing video approval: %v", err)
+	}
+	seconds := 8
+	audio := false
+	watermark := false
+	settings := CloudAgentMediaSettings{ChannelID: args.ChannelID, ChannelModelKey: args.ChannelModelKey, Size: args.Size, Quality: args.Quality, DurationSeconds: &seconds, VideoGenerateAudio: &audio, VideoWatermark: &watermark}
+	if err := s.DecideCloudAgentApproval("user", run.ID, state.Approval.ID, "approve", "", &settings); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.advanceCloudAgentByID("user", run.ID); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := s.repo.CloudAgent("user", run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err = cloudAgentDecode(updated)
+	if err != nil || state.MediaTaskID == "" {
+		t.Fatalf("edited video approval did not submit: %v", err)
+	}
+	task, err := s.repo.TaskForUser("user", state.MediaTaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var input canvasGenerationInput
+	if err := json.Unmarshal([]byte(task.InputJSON), &input); err != nil {
+		t.Fatal(err)
+	}
+	if input.Config.VideoSeconds != "8" || input.Config.VideoGenerateAudio != "false" || input.Config.VideoWatermark != "false" {
+		t.Fatalf("approved video options were not applied: %+v", input.Config)
+	}
+	var count int64
+	db.Model(&model.Task{}).Where("type = ?", "canvas_video").Count(&count)
+	if count != 1 {
+		t.Fatalf("expected exactly one video task, got %d", count)
+	}
+}
+
+func TestCloudAgentConversationKeepsRecentRounds(t *testing.T) {
+	s, db, _, _ := creationTestService(t)
+	if err := db.Create(&model.CanvasProject{ID: "agent-canvas", UserID: "user", PayloadJSON: `{"nodes":[]}`}).Error; err != nil {
+		t.Fatal(err)
+	}
+	parent := ""
+	for round := 0; round < 15; round++ {
+		req := agentTestRequest()
+		req.IdempotencyKey = fmt.Sprintf("long-conversation-%d", round)
+		run, err := s.CreateCloudAgentRun("user", req, parent)
+		if err != nil {
+			t.Fatalf("round %d failed: %v", round+1, err)
+		}
+		execution, _ := s.repo.CloudAgent("user", run.ID)
+		state, err := cloudAgentDecode(execution)
+		if err != nil {
+			t.Fatalf("history decode failed at round %d: %v", round, err)
+		}
+		want := round * 2
+		if want > cloudAgentHistoryKeepRounds*2 {
+			want = cloudAgentHistoryKeepRounds * 2
+		}
+		if len(state.TextHistory) != want {
+			t.Fatalf("history window at round %d: got %d want %d", round, len(state.TextHistory), want)
+		}
+		if err := db.Model(&model.Task{}).Where("id = ?", run.ID).Updates(map[string]any{"status": model.TaskStatusSucceeded, "result_json": `{"text":"继续创作"}`}).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := s.advanceCloudAgentByID("user", run.ID); err != nil {
+			t.Fatal(err)
+		}
+		parent = run.ID
+	}
+	run, _ := s.repo.CloudAgent("user", parent)
+	state, _ := cloudAgentDecode(run)
+	for i := range state.TextHistory {
+		state.TextHistory[i].Content = strings.Repeat("x", 4000)
+	}
+	raw, _ := json.Marshal(state)
+	if err := db.Model(run).Update("state_json", string(raw)).Error; err != nil {
+		t.Fatal(err)
+	}
+	req := agentTestRequest()
+	req.IdempotencyKey = "long-conversation-trim-bytes"
+	child, err := s.CreateCloudAgentRun("user", req, parent)
+	if err != nil {
+		t.Fatalf("oversize history should trim not fail: %v", err)
+	}
+	childRun, err := s.repo.CloudAgent("user", child.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	childState, err := cloudAgentDecode(childRun)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cloudAgentHistoryJSONSize(childState.TextHistory) > cloudAgentHistoryMaxBytes {
+		t.Fatal("trimmed history still over cap")
+	}
+	if cloudAgentHistoryUserInstructionCount(childState.TextHistory) < 1 {
+		t.Fatal("trimmed away the conversation")
+	}
+}
+
 // agentImageApprovalFixture 准备一次图片生成审批：图片模型、参考素材与审批参数。
 func agentImageApprovalFixture(t *testing.T) (*Service, *gorm.DB, cloudAgentMediaArgs) {
 	t.Helper()
@@ -401,69 +513,5 @@ func TestCloudAgentImageApprovalRejectsEditedSettingsAfterDependencyChange(t *te
 	db.Model(&model.Task{}).Where("type = ?", "canvas_image").Count(&count)
 	if count != 0 {
 		t.Fatal("rejected approval submitted a task")
-	}
-}
-
-func TestCloudAgentConversationKeepsRecentRounds(t *testing.T) {
-	s, db, _, _ := creationTestService(t)
-	if err := db.Create(&model.CanvasProject{ID: "agent-canvas", UserID: "user", PayloadJSON: `{"nodes":[]}`}).Error; err != nil {
-		t.Fatal(err)
-	}
-	parent := ""
-	for round := 0; round < 15; round++ {
-		req := agentTestRequest()
-		req.IdempotencyKey = fmt.Sprintf("long-conversation-%d", round)
-		run, err := s.CreateCloudAgentRun("user", req, parent)
-		if err != nil {
-			t.Fatalf("round %d failed: %v", round+1, err)
-		}
-		execution, _ := s.repo.CloudAgent("user", run.ID)
-		state, err := cloudAgentDecode(execution)
-		if err != nil {
-			t.Fatalf("history decode failed at round %d: %v", round, err)
-		}
-		want := round * 2
-		if want > cloudAgentHistoryKeepRounds*2 {
-			want = cloudAgentHistoryKeepRounds * 2
-		}
-		if len(state.TextHistory) != want {
-			t.Fatalf("history window at round %d: got %d want %d", round, len(state.TextHistory), want)
-		}
-		if err := db.Model(&model.Task{}).Where("id = ?", run.ID).Updates(map[string]any{"status": model.TaskStatusSucceeded, "result_json": `{"text":"继续创作"}`}).Error; err != nil {
-			t.Fatal(err)
-		}
-		if err := s.advanceCloudAgentByID("user", run.ID); err != nil {
-			t.Fatal(err)
-		}
-		parent = run.ID
-	}
-	run, _ := s.repo.CloudAgent("user", parent)
-	state, _ := cloudAgentDecode(run)
-	for i := range state.TextHistory {
-		state.TextHistory[i].Content = strings.Repeat("x", 4000)
-	}
-	raw, _ := json.Marshal(state)
-	if err := db.Model(run).Update("state_json", string(raw)).Error; err != nil {
-		t.Fatal(err)
-	}
-	req := agentTestRequest()
-	req.IdempotencyKey = "long-conversation-trim-bytes"
-	child, err := s.CreateCloudAgentRun("user", req, parent)
-	if err != nil {
-		t.Fatalf("oversize history should trim not fail: %v", err)
-	}
-	childRun, err := s.repo.CloudAgent("user", child.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	childState, err := cloudAgentDecode(childRun)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cloudAgentHistoryJSONSize(childState.TextHistory) > cloudAgentHistoryMaxBytes {
-		t.Fatal("trimmed history still over cap")
-	}
-	if cloudAgentHistoryUserInstructionCount(childState.TextHistory) < 1 {
-		t.Fatal("trimmed away the conversation")
 	}
 }

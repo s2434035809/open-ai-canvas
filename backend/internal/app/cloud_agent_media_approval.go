@@ -12,11 +12,15 @@ import (
 // Only user-editable image options cross the approval boundary. Targets,
 // references, prompt, snapshot and generation mode remain server-authored.
 type CloudAgentMediaSettings struct {
-	LogicalModelID  string `json:"logicalModelId,omitempty"`
-	ChannelID       string `json:"channelId,omitempty"`
-	ChannelModelKey string `json:"channelModelKey,omitempty"`
-	Size            string `json:"size"`
-	Quality         string `json:"quality"`
+	LogicalModelID             string `json:"logicalModelId,omitempty"`
+	ChannelID                  string `json:"channelId,omitempty"`
+	ChannelModelKey            string `json:"channelModelKey,omitempty"`
+	Size                       string `json:"size"`
+	Quality                    string `json:"quality"`
+	DurationSeconds            *int   `json:"durationSeconds,omitempty"`
+	VideoGenerateAudio         *bool  `json:"videoGenerateAudio,omitempty"`
+	VideoWatermark             *bool  `json:"videoWatermark,omitempty"`
+	VideoArkPrivateAssetUpload *bool  `json:"videoArkPrivateAssetUpload,omitempty"`
 }
 
 // updateCloudAgentMediaApproval rebuilds the complete prepared admission for an
@@ -28,17 +32,31 @@ func (s *Service) updateCloudAgentMediaApproval(repo *repository.Repository, run
 	}
 	call := state.Approval.Call
 	if call.Function.Name != "generate_media" {
-		return BadAuthRequest("当前审批不是图片生成，不能修改生成参数")
+		return BadAuthRequest("当前审批不是媒体生成，不能修改生成参数")
 	}
 	var args cloudAgentMediaArgs
 	if err := decodeCloudAgentJSONObject(call.Function.Arguments, &args); err != nil {
 		return err
 	}
-	if args.Mode != "image" {
-		return BadAuthRequest("仅图片生成审批支持修改模型、画幅和质量")
+	if args.Mode != "image" && args.Mode != "video" {
+		return BadAuthRequest("仅图片或视频生成审批支持修改模型和规格")
 	}
 	args.LogicalModelID, args.ChannelID, args.ChannelModelKey = settings.LogicalModelID, settings.ChannelID, settings.ChannelModelKey
 	args.Size, args.Quality = settings.Size, settings.Quality
+	if args.Mode == "video" {
+		if settings.DurationSeconds != nil {
+			if *settings.DurationSeconds < 0 {
+				return BadAuthRequest("视频时长不能为负数")
+			}
+			args.Duration = *settings.DurationSeconds
+		}
+		args.VideoGenerateAudio = settings.VideoGenerateAudio
+		args.VideoWatermark = settings.VideoWatermark
+		args.VideoArkPrivateAssetUpload = settings.VideoArkPrivateAssetUpload
+	}
+	if args.Mode == "image" && (settings.DurationSeconds != nil || settings.VideoGenerateAudio != nil || settings.VideoWatermark != nil || settings.VideoArkPrivateAssetUpload != nil) {
+		return BadAuthRequest("视频参数仅适用于视频生成审批")
+	}
 	raw, err := json.Marshal(args)
 	if err != nil {
 		return err
@@ -111,7 +129,7 @@ func replaceCloudAgentPreparedLeases(repo *repository.Repository, userID, runID,
 }
 
 // cloudAgentResolvedMediaOptionKeys 是任务准入会按模型能力重新解析的生成规格键。
-var cloudAgentResolvedMediaOptionKeys = []string{"size", "videoSeconds", "vquality", "quality", "count", "videoGenerateAudio"}
+var cloudAgentResolvedMediaOptionKeys = []string{"size", "videoSeconds", "vquality", "quality", "count", "videoGenerateAudio", "videoWatermark", "videoArkPrivateAssetUpload"}
 
 func validateCloudAgentResolvedMediaOptions(requested, resolved map[string]any) error {
 	for _, key := range cloudAgentResolvedMediaOptionKeys {
