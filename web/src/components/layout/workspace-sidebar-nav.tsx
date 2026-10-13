@@ -1,10 +1,11 @@
 import { Popover } from "antd";
-import { BookImage, ChevronDown, ChevronRight, CircleUserRound, History as HistoryIcon, Infinity as InfinityIcon, PanelLeftClose, PanelLeftOpen, Plus } from "lucide-react";
+import { BookImage, ChevronDown, ChevronRight, CircleUserRound, History as HistoryIcon, Image as ImageIcon, Infinity as InfinityIcon, PanelLeftClose, PanelLeftOpen, Plus, Video } from "lucide-react";
 import { LayoutGroup, motion, useReducedMotion } from "motion/react";
 import { useEffect, useMemo, useRef, useState, type ComponentType, type CSSProperties } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router";
 
 import { BrandLogoFrame } from "@/components/brand/brand-logo";
+import { UserAvatar } from "@/components/layout/user-avatar";
 import { Kbd } from "@/components/ui/base/kbd";
 import { navigationTools, type NavigationToolSlug } from "@/constant/navigation-tools";
 import { useWorkspaceLogout } from "@/hooks/use-workspace-logout";
@@ -47,14 +48,15 @@ function buildNav(features: FeatureAvailability, isAdmin: boolean, portfolioEnab
             items: [
                 { ...toolItem("create", "/"), id: "home", title: "创作" },
                 { ...toolItem("inspirations", "/inspirations"), title: "灵感" },
-                { ...toolItem("projects", "/projects"), title: "短剧 Agent" },
+                { ...toolItem("projects", "/projects"), title: "短剧制作" },
                 { ...toolItem("canvas", "/canvas"), title: "自由画布" },
             ],
         },
         {
             heading: "资源与工具",
             items: [
-                { ...toolItem("assets", "/assets"), title: "资产" },
+                ...(features.imageWorkbenchEnabled ? [{ id: "toolbox-image", title: "图片生成", icon: ImageIcon, to: "/toolbox/image" }] : []),
+                ...(features.videoWorkbenchEnabled ? [{ id: "toolbox-video", title: "视频生成", icon: Video, to: "/toolbox/video" }] : []),
                 { ...toolItem("skills", "/skills"), title: "技能" },
                 // 作品集是宿主内置的全屏工作台：启用后在侧栏常驻入口，
                 // 否则只能从插件中心卡片绕进去，用户会以为功能不存在。
@@ -62,7 +64,13 @@ function buildNav(features: FeatureAvailability, isAdmin: boolean, portfolioEnab
                 ...(features.pluginCenterEnabled || isAdmin ? [{ ...toolItem("plugins", "/plugins"), title: "插件" }] : []),
             ],
         },
-        ...(features.taskCenterEnabled ? [{ items: [{ ...toolItem("tasks", "/tasks"), title: "创作历史", icon: HistoryIcon }] }] : []),
+        {
+            heading: "资产与历史",
+            items: [
+                { ...toolItem("assets", "/assets"), title: "资产" },
+                ...(features.taskCenterEnabled ? [{ id: "tasks", title: "创作历史", icon: ImageIcon, to: "/tasks" }] : []),
+            ],
+        },
     ];
 
     // 管理、设置和退出登录不再占据参考站式侧栏底部，而是通过用户卡片菜单进入。
@@ -71,23 +79,20 @@ function buildNav(features: FeatureAvailability, isAdmin: boolean, portfolioEnab
 }
 
 function WorkspaceSidebarProfile({ collapsed, user, onExpand, onCollapse }: { collapsed: boolean; user: NonNullable<ReturnType<typeof useUserStore.getState>["user"]> | null; onExpand: () => void; onCollapse: () => void }) {
-    const [failed, setFailed] = useState(false);
     const [menuOpen, setMenuOpen] = useState(false);
-    const avatarUrl = /^https?:\/\//i.test(user?.avatarUrl || "") ? user?.avatarUrl : "";
     const profileName = user?.displayName || user?.username || "未登录";
-
-    useEffect(() => setFailed(false), [avatarUrl]);
 
     if (!user) {
         return (
             <Link to="/login" className={cn("app-workspace-sidebar-profile", collapsed && "is-collapsed")} aria-label="登录" title="登录">
-                <span className="app-workspace-sidebar-profile-avatar"><CircleUserRound aria-hidden /></span>
+                <span className="app-workspace-sidebar-profile-avatar">
+                    <CircleUserRound aria-hidden />
+                </span>
                 {!collapsed ? <span>登录</span> : null}
             </Link>
         );
     }
 
-    const avatar = avatarUrl && !failed ? <img src={avatarUrl} alt="" referrerPolicy="no-referrer" onError={() => setFailed(true)} /> : <CircleUserRound aria-hidden />;
     const content = (
         <WorkspaceAccountCard
             onNavigate={() => setMenuOpen(false)}
@@ -105,7 +110,7 @@ function WorkspaceSidebarProfile({ collapsed, user, onExpand, onCollapse }: { co
             <div className={cn("app-workspace-sidebar-profile-row", collapsed && "is-collapsed")}>
                 <Popover open={menuOpen} onOpenChange={setMenuOpen} trigger="click" placement="topLeft" arrow={false} rootClassName="workspace-account-popover" content={content}>
                     <button type="button" className={cn("app-workspace-sidebar-profile", collapsed && "is-collapsed")} aria-label="打开账户菜单" title={profileName}>
-                        <span className="app-workspace-sidebar-profile-avatar">{avatar}</span>
+                        <UserAvatar user={user} className="app-workspace-sidebar-profile-avatar" />
                         {!collapsed ? (
                             <span className="app-workspace-sidebar-profile-copy">
                                 <strong>{profileName}</strong>
@@ -114,13 +119,17 @@ function WorkspaceSidebarProfile({ collapsed, user, onExpand, onCollapse }: { co
                         ) : null}
                     </button>
                 </Popover>
-                {!collapsed ? <button type="button" className="app-workspace-sidebar-collapse-toggle" aria-label="收起侧栏" title="收起侧栏" onClick={onCollapse}>
-                    <PanelLeftClose className="size-4" strokeWidth={1.7} />
-                </button> : null}
+                {!collapsed ? (
+                    <button type="button" className="app-workspace-sidebar-collapse-toggle" aria-label="收起侧栏" title="收起侧栏" onClick={onCollapse}>
+                        <PanelLeftClose className="size-4" strokeWidth={1.7} />
+                    </button>
+                ) : null}
             </div>
-            {collapsed ? <button type="button" className="app-workspace-sidebar-collapse-toggle is-collapsed" aria-label="展开侧栏菜单" title="展开侧栏菜单" onClick={onExpand}>
-                <PanelLeftOpen className="size-4" strokeWidth={1.7} />
-            </button> : null}
+            {collapsed ? (
+                <button type="button" className="app-workspace-sidebar-collapse-toggle is-collapsed" aria-label="展开侧栏菜单" title="展开侧栏菜单" onClick={onExpand}>
+                    <PanelLeftOpen className="size-4" strokeWidth={1.7} />
+                </button>
+            ) : null}
         </div>
     );
 }
@@ -132,7 +141,12 @@ function WorkspaceSwitcher({ collapsed, onNavigate }: { collapsed: boolean; onNa
         return (
             <div className="app-workspace-sidebar-brand-row relative shrink-0 flex items-center justify-center px-3 pt-3">
                 <Link to="/" onClick={onNavigate} className="app-workspace-sidebar-brand-button group" aria-label={`${appearance.brandName}首页`}>
-                    <BrandLogoFrame className="app-workspace-brand-mark grid size-8 shrink-0 place-items-center rounded-[var(--r-sm)] shadow-sm" logoClassName="size-5 object-contain" alt="" fallback={<InfinityIcon className="size-4" strokeWidth={2.2} />} />
+                    <BrandLogoFrame
+                        className="app-workspace-brand-mark grid size-8 shrink-0 place-items-center rounded-[var(--r-sm)] shadow-sm"
+                        logoClassName="size-5 object-contain"
+                        alt=""
+                        fallback={<InfinityIcon className="size-4" strokeWidth={2.2} />}
+                    />
                 </Link>
             </div>
         );
@@ -339,6 +353,17 @@ function NavGroup({ group, activeId, onNavigate, onOpenSearch, onLogout, collaps
     );
 }
 
+// 菜单项 id 与实际路由不一定同名：/toolbox/image 和 /toolbox/video 共用 toolbox 前缀，
+// 只取首段会让两者都匹配不到任何菜单项，侧栏因此没有高亮；/plugins/portfolio
+// 是独立工作台，高亮要落到它自己的入口而不是「插件」。
+export function workspaceNavActiveId(pathname: string, section?: string | null) {
+    const segments = pathname.split("/").filter(Boolean);
+    if (pathname.startsWith("/plugins/portfolio")) return "portfolio";
+    if (segments[0] === "toolbox" && segments[1]) return `toolbox-${segments[1]}`;
+    const slug = segments[0] || "home";
+    return slug === "settings" && section ? `settings:${section}` : slug;
+}
+
 export function WorkspaceSidebarNav({ collapsed, onNavigate, onOpenSearch, onExpand, onCollapse }: { collapsed: boolean; onNavigate: () => void; onOpenSearch: () => void; onExpand: () => void; onCollapse: () => void }) {
     const { pathname } = useLocation();
     const [searchParams] = useSearchParams();
@@ -353,10 +378,7 @@ export function WorkspaceSidebarNav({ collapsed, onNavigate, onOpenSearch, onExp
     const { handleLogout } = useWorkspaceLogout();
     const { groups, footer } = useMemo(() => buildNav(features, user?.role === "admin", portfolioEnabled), [features, user?.role, portfolioEnabled]);
 
-    const slug = pathname.split("/").filter(Boolean)[0] || "home";
-    const section = searchParams.get("section");
-    // /plugins/portfolio 是独立工作台，导航高亮要落到它自己的入口上。
-    const activeId = pathname.startsWith("/plugins/portfolio") ? "portfolio" : slug === "settings" && section ? `settings:${section}` : slug;
+    const activeId = workspaceNavActiveId(pathname, searchParams.get("section"));
 
     const scrollRef = useRef<HTMLDivElement>(null);
     const [scrollState, setScrollState] = useState({ hasTopFade: false, hasBottomFade: false });
