@@ -24,3 +24,24 @@ test("事件流未连接时「同意执行」仍然可点，点击直接提交�
     expect(conversation).toContain("approvalSubmitting={approvalSubmitting}");
     expect(conversation).not.toContain("connectionStatus");
 });
+
+// 自研（2026-10-12）：同意执行前的画布保存失败不能阻断审批提交。
+//
+// 症状：保存走的是 operation 增量接口，一旦本地队列里有服务端必然拒绝的脏操作
+// （例如节点补丁丢失基线），PATCH 会持续 400；原先 `await saveRemoteUserDataNow()`
+// 抛错后直接进 catch，审批请求根本没发出，运行永久停在等待审批，用户感知就是
+// 「点了同意执行又不行了」。保存有它自己的重放队列，审批是写操作必须送达服务端。
+test("同意执行前的画布保存失败只提示，不阻断审批提交", async () => {
+    const panel = await Bun.file(new URL("../src/components/canvas/canvas-cloud-agent-panel.tsx", import.meta.url)).text();
+    const body = panel.match(/const submitApproval = async[\s\S]*?\n    \};/)?.[0];
+    expect(body).toBeDefined();
+    expect(body).toContain("await saveRemoteUserDataNow();");
+    // 保存被包进独立的 try/catch，失败只发提示
+    const guard = body!.match(/if \(decision === "approve"\) \{[\s\S]*?\n            \}/)?.[0];
+    expect(guard).toBeDefined();
+    expect(guard).toContain("catch (saveCause)");
+    expect(guard).toContain("`approval-save-${approvalId}`");
+    // 保存不再与提交共享同一个 try/catch：失败后仍必须走到审批提交
+    expect(body).not.toContain('if (decision === "approve") await saveRemoteUserDataNow();');
+    expect(body!.indexOf("decideAgentApproval(")).toBeGreaterThan(guard!.length);
+});

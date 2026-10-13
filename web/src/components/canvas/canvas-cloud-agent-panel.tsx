@@ -811,7 +811,22 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, se
         approvalRequestRef.current = approvalId;
         setApprovalSubmitting(true);
         try {
-            if (decision === "approve") await saveRemoteUserDataNow();
+            if (decision === "approve") {
+                // 先落盘本地画布再放行，Agent 恢复后才能看到最新草稿。但保存失败
+                // 不能阻断审批：画布同步有自己的重放队列，卡住的往往是历史脏操作，
+                // 而审批一旦发不出去，运行会永久停在等待审批，用户看到的就是
+                // 「点了同意没反应」。这里只提示并继续提交，未确认的修改仍留在
+                // 待同步队列里由后台重试。
+                try {
+                    await saveRemoteUserDataNow();
+                } catch (saveCause) {
+                    if (currentScope.current === scope) {
+                        setMessages((current) =>
+                            appendAgentError(current, `approval-save-${approvalId}`, saveCause, "画布尚未同步到云端，已继续提交审批；本地修改会稍后自动重试"),
+                        );
+                    }
+                }
+            }
             if (currentScope.current !== scope) return;
             await decideAgentApproval(runId, approvalId, decision, approval.reason, AbortSignal.timeout(15_000), mediaSettings);
             if (currentScope.current === scope) {
