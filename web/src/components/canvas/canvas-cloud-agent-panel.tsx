@@ -120,7 +120,9 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, se
     const skillBrowseKey = JSON.stringify([userId, skillTag, debouncedSkillSearch, platformCategory, curationState.curation?.revision, curationState.curation?.enabled]);
     const skillBrowseKeyRef = useRef(skillBrowseKey);
     skillBrowseKeyRef.current = skillBrowseKey;
-    useEffect(() => { if (curationState.curation?.enabled) setSkillTag("all"); }, [curationState.curation?.enabled]);
+    useEffect(() => {
+        if (curationState.curation?.enabled) setSkillTag("all");
+    }, [curationState.curation?.enabled]);
     const [busy, setBusy] = useState(false);
     const [approvalSubmitting, setApprovalSubmitting] = useState(false);
     const [exporting, setExporting] = useState(false);
@@ -492,9 +494,7 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, se
                         const defaults = await ensureDefaultCanvasAgentSkill();
                         if (!active) return;
                         setSkills(defaults.skills);
-                        initialSkillIds = defaults.skills.some((skill) => skill.skillId === DEFAULT_CANVAS_AGENT_SKILL_ID && skill.isAdded)
-                            ? [DEFAULT_CANVAS_AGENT_SKILL_ID]
-                            : [];
+                        initialSkillIds = defaults.skills.some((skill) => skill.skillId === DEFAULT_CANVAS_AGENT_SKILL_ID && skill.isAdded) ? [DEFAULT_CANVAS_AGENT_SKILL_ID] : [];
                     } catch (cause) {
                         if (active) setMessages((currentMessages) => appendAgentError(currentMessages, "default-skill-error", cause, "默认短剧技能未能安装，已保留空技能选择"));
                     }
@@ -554,7 +554,7 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, se
                 const existing = current.find((conversation) => conversation.id === activeConversationId);
                 if (!existing || existing.skillIds?.join("\0") === selectedSkillIds.join("\0")) return current;
                 const now = new Date().toISOString();
-                return current.map((conversation) => conversation.id === activeConversationId ? { ...conversation, skillIds: selectedSkillIds, updatedAt: now } : conversation);
+                return current.map((conversation) => (conversation.id === activeConversationId ? { ...conversation, skillIds: selectedSkillIds, updatedAt: now } : conversation));
             });
             return;
         }
@@ -597,7 +597,7 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, se
                     if (event.seq > lastSeqRef.current + 1) canvasSyncRef.current?.reconcile();
                     lastSeqRef.current = event.seq;
                 }
-                setMessages((current) => current.some((item) => item.id === `stream-error-${run.id}`) ? current.filter((item) => item.id !== `stream-error-${run.id}`) : current);
+                setMessages((current) => (current.some((item) => item.id === `stream-error-${run.id}`) ? current.filter((item) => item.id !== `stream-error-${run.id}`) : current));
                 setContextUsage((current) => reduceAgentContextUsage(current, event));
                 applyAgentEvent(event, setMessages, setRun, setApproval, setPrompt);
                 canvasSyncRef.current?.receive(event);
@@ -801,9 +801,7 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, se
         if (connectionStatus !== "connected") {
             // 审批是写操作，不依赖事件流：观察通道掉线时按钮不再禁用，点击后直接提交，
             // 由服务端校验审批是否仍然有效。否则掉线期间用户看到的就是「点了没反应」。
-            setMessages((current) =>
-                appendAgentError(current, `approval-offline-${approval.approvalId}`, new Error("Agent 事件流未连接"), "事件流未连接，已直接提交审批；结果以服务端为准"),
-            );
+            setMessages((current) => appendAgentError(current, `approval-offline-${approval.approvalId}`, new Error("Agent 事件流未连接"), "事件流未连接，已直接提交审批；结果以服务端为准"));
         }
         const runId = run.id;
         const approvalId = approval.approvalId;
@@ -821,9 +819,7 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, se
                     await saveRemoteUserDataNow();
                 } catch (saveCause) {
                     if (currentScope.current === scope) {
-                        setMessages((current) =>
-                            appendAgentError(current, `approval-save-${approvalId}`, saveCause, "画布尚未同步到云端，已继续提交审批；本地修改会稍后自动重试"),
-                        );
+                        setMessages((current) => appendAgentError(current, `approval-save-${approvalId}`, saveCause, "画布尚未同步到云端，已继续提交审批；本地修改会稍后自动重试"));
                     }
                 }
             }
@@ -1158,7 +1154,10 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, se
             <CanvasAgentSkillLibraryModal
                 curationState={curationState}
                 platformCategory={platformCategory}
-                onPlatformCategoryChange={(value) => { setPlatformCategory(value); setSkillTag("all"); }}
+                onPlatformCategoryChange={(value) => {
+                    setPlatformCategory(value);
+                    setSkillTag("all");
+                }}
                 open={skillsOpen}
                 theme={theme}
                 installedSkills={installedSkills}
