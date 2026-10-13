@@ -16,7 +16,6 @@ export const LOCAL_STORAGE_KEY_PATTERN = /^(image|video|audio|file|video-referen
 
 export type ResourceKind = "image" | "video" | "audio" | "file";
 
-
 export function resourceKindFromMime(type: unknown): ResourceKind {
     if (typeof type !== "string") return "file";
     if (type.startsWith("image/")) return "image";
