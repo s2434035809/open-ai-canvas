@@ -207,6 +207,24 @@ func (s *Service) failPiRunner(runID, userID string, cause error) {
 	}
 }
 
+// cloudAgentRunAwaitingApproval 报告运行此刻是否停在等待审批：审批卡片仍在，
+// 当前整轮不能被判失败。审批准入阶段（advanceCloudAgentTool）自身的错误仍向上抛，
+// 由既有失败语义收场；这里只兜住"运行已进入等待、拒绝新模型步"这一类并发冲突。
+func (s *Service) cloudAgentRunAwaitingApproval(userID, runID string) bool {
+	if s == nil || s.repo == nil {
+		return false
+	}
+	run, err := s.repo.CloudAgent(userID, runID)
+	if err != nil {
+		return false
+	}
+	if run.Status != "waiting_approval" {
+		return false
+	}
+	state, err := cloudAgentDecode(run)
+	return err == nil && state.Approval != nil
+}
+
 func (s *Service) stopCloudAgentPi(runID string) {
 	s.piRunnerMu.Lock()
 	cancel := s.piRunners[runID]
@@ -358,8 +376,13 @@ func (s *Service) runCloudAgentPiSession(ctx context.Context, userID, runID stri
 	if err != nil {
 		// 已经因审批暂停的会话，收尾阶段再报错不影响运行：状态停在等审批，
 		// 由审批结论接管。把它当失败处理会让用户还没来得及审批就整轮中断。
-		if pausedForApproval.Load() && !errors.Is(err, context.Canceled) {
-			log.Printf("[Agent] session error after approval pause ignored run=%s: %v", runID, err)
+		//
+		// 会话被恢复/重启起来、首个模型步就撞上待审批状态时也要走同一条路：
+		// 此前的暂停发生在旧会话里，本进程的 pausedForApproval 从未置位，
+		// 否则 /model 的「run is waiting for approval」会一路上抛成整轮 failed，
+		// 用户看到的审批卡片随即失效（审批结论再也无人接管）。
+		if !errors.Is(err, context.Canceled) && (pausedForApproval.Load() || s.cloudAgentRunAwaitingApproval(userID, runID)) {
+			log.Printf("[Agent] session error covered by pending approval run=%s: %v", runID, err)
 			return nil
 		}
 		return err

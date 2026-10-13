@@ -103,3 +103,27 @@ func TestCloudAgentPiModelStepRefusedWhileAwaitingApproval(t *testing.T) {
 		t.Fatalf("%d billable model step task(s) were created while awaiting approval", steps)
 	}
 }
+
+// 会话可能在审批暂停后被其它入口重新拉起（幂等重放、媒体回写、节点代提交、
+// 恢复扫描后的重启）。此时新会话的首个 /model 会撞上仍挂着的审批并被拒；
+// 旧逻辑只在 Tool 桥置位 pausedForApproval 才兜底，于是这一拒被一路上抛成
+// 整轮 failed，用户手里的审批卡片随即失效（点「同意执行」也没人接管）。
+func TestCloudAgentPiSessionErrorCoveredByPendingApproval(t *testing.T) {
+	s, db, root := approvalPauseRoot(t)
+	run, state := agentInterjectionState(t, s, root.ID)
+	approvalPauseStage(t, s, db, run, &state)
+
+	// 会话重启路径：pausedForApproval 从未置位，错误来自被拒的首个模型步。
+	if !s.cloudAgentRunAwaitingApproval("user", root.ID) {
+		t.Fatal("pending approval was not detected; a restarted session cannot be covered")
+	}
+
+	// 没有待审批时不得吞掉真实失败。
+	run, state = agentInterjectionState(t, s, root.ID)
+	state.Approval = nil
+	run.Status = "running"
+	approvalPauseSaveState(t, s, db, run, &state)
+	if s.cloudAgentRunAwaitingApproval("user", root.ID) {
+		t.Fatal("running run without approval must not be treated as awaiting approval")
+	}
+}
