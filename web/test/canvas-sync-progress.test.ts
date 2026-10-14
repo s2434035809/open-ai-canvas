@@ -14,6 +14,7 @@ const paths: Record<string, string> = {
     zustand: import.meta.resolve("zustand"),
     "@/services/api/resources": join(dir, "resources.ts"),
     "@/lib/canvas/canvas-content": join(dir, "content.ts"),
+    "@/lib/storable-blob": join(dir, "storable-blob.ts"),
     "@/stores/use-sync-progress-store": join(dir, "progress.ts"),
     "./user-data-sync-media": join(dir, "media.ts"),
 };
@@ -60,6 +61,7 @@ export const useCanvasHistoryStore = {};
 copySource("services/api/resources.ts", "resources.ts");
 copySource("services/user-data-sync-media.ts", "media.ts");
 copySource("lib/canvas/canvas-content.ts", "content.ts");
+copySource("lib/storable-blob.ts", "storable-blob.ts");
 copySource("stores/use-sync-progress-store.ts", "progress.ts");
 copySource("services/user-data-sync.ts", "sync.ts");
 const sync: typeof import("@/services/user-data-sync") = await import(join(dir, "sync.ts"));
