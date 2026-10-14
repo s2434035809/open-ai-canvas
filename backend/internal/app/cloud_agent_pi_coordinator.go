@@ -374,23 +374,25 @@ func (s *Service) runCloudAgentPiSession(ctx context.Context, userID, runID stri
 		},
 	})
 	if err != nil {
-		// 已经因审批暂停的会话，收尾阶段再报错不影响运行：状态停在等审批，
-		// 由审批结论接管。把它当失败处理会让用户还没来得及审批就整轮中断。
+		// The runtime can abort a prompt before the in-process pause flag is set
+		// (for example when the SDK races into a second model request). The durable
+		// run state is authoritative: an approval/user wait owns the next action
+		// and must never be converted into a terminal runtime failure.
 		//
 		// 会话被恢复/重启起来、首个模型步就撞上待审批状态时也要走同一条路：
 		// 此前的暂停发生在旧会话里，本进程的 pausedForApproval 从未置位，
 		// 否则 /model 的「run is waiting for approval」会一路上抛成整轮 failed，
 		// 用户看到的审批卡片随即失效（审批结论再也无人接管）。
-		if !errors.Is(err, context.Canceled) && (pausedForApproval.Load() || s.cloudAgentRunAwaitingApproval(userID, runID)) {
-			log.Printf("[Agent] session error covered by pending approval run=%s: %v", runID, err)
+		if !errors.Is(err, context.Canceled) && (pausedForApproval.Load() || s.cloudAgentRunPausedForInput(userID, runID) || s.cloudAgentRunAwaitingApproval(userID, runID)) {
+			log.Printf("[Agent] session error covered by pending approval/user wait run=%s: %v", runID, err)
 			return nil
 		}
 		return err
 	}
 
-	// 本轮因审批暂停：运行由审批决定接管，不能在这里完成。用户可能在会话退出前
-	// 就已批准，此时状态已回到 running，若继续会把未恢复的运行误标为完成。
-	if pausedForApproval.Load() {
+	// The same durable check covers a clean runtime exit after an asynchronous
+	// abort, when the local atomic flag was not observed by this coordinator.
+	if pausedForApproval.Load() || s.cloudAgentRunPausedForInput(userID, runID) {
 		return nil
 	}
 
@@ -403,6 +405,17 @@ func (s *Service) runCloudAgentPiSession(ctx context.Context, userID, runID stri
 
 	// 9. 完成运行
 	return s.completeCloudAgentPiRun(userID, runID)
+}
+
+func (s *Service) cloudAgentRunPausedForInput(userID, runID string) bool {
+	if s == nil || s.repo == nil || userID == "" || runID == "" {
+		return false
+	}
+	run, err := s.repo.CloudAgent(userID, runID)
+	if err != nil {
+		return false
+	}
+	return run.Status == "waiting_approval" || run.Status == "waiting_user"
 }
 
 // cloudAgentPiTurnSettled 判断本轮是否已在会话里完整结束：本轮已有成功的助手回复，
