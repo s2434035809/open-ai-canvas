@@ -431,7 +431,9 @@ func TestCloudAgentImageApprovalAcceptsEditedSettingsAfterUnrelatedCanvasWrite(t
 	}
 	agentUnrelatedCanvasWrite(t, db)
 
-	settings := CloudAgentMediaSettings{ChannelID: "channel", ChannelModelKey: "grok-image", Size: "16:9", Quality: "2k"}
+	// grok-image 的能力声明里尺寸走 aspect_ratio、分辨率走 imageResolution，
+	// 上游 v1.6.8 起 Quality 不再承载分辨率（image.Quality.Supported = false）。
+	settings := CloudAgentMediaSettings{ChannelID: "channel", ChannelModelKey: "grok-image", Size: "16:9", ImageResolution: "2k"}
 	if err := s.DecideCloudAgentApproval("user", run.ID, state.Approval.ID, "approve", "", &settings); err != nil {
 		t.Fatalf("unrelated canvas write blocked an edited approval: %v", err)
 	}
@@ -454,7 +456,7 @@ func TestCloudAgentImageApprovalAcceptsEditedSettingsAfterUnrelatedCanvasWrite(t
 	if err := json.Unmarshal([]byte(task.InputJSON), &input); err != nil {
 		t.Fatal(err)
 	}
-	if input.Config.Size != settings.Size || input.Config.Quality != settings.Quality {
+	if input.Config.Size != settings.Size || input.Config.ImageResolution != settings.ImageResolution {
 		t.Fatalf("approved settings were lost: %+v", input.Config)
 	}
 }
@@ -498,7 +500,7 @@ func TestCloudAgentImageApprovalRejectsEditedSettingsAfterDependencyChange(t *te
 	}
 	agentUnrelatedCanvasWrite(t, db)
 
-	settings := CloudAgentMediaSettings{ChannelID: "channel", ChannelModelKey: "grok-image", Size: "16:9", Quality: "2k"}
+	settings := CloudAgentMediaSettings{ChannelID: "channel", ChannelModelKey: "grok-image", Size: "16:9", ImageResolution: "2k"}
 	if err := s.DecideCloudAgentApproval("user", run.ID, state.Approval.ID, "approve", "", &settings); err == nil {
 		t.Fatal("changed generation dependency accepted an edited approval")
 	}
