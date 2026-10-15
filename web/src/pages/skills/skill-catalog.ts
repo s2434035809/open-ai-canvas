@@ -5,6 +5,7 @@ export const fallbackSkillCategories: SkillCategory[] = [
     { value: "ecommerce", label: "电商营销" },
     { value: "creative", label: "创意设计" },
     { value: "social", label: "社媒内容" },
+    { value: "audio", label: "音频配音" },
     { value: "others", label: "其他" },
 ];
 

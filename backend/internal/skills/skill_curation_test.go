@@ -36,7 +36,7 @@ func newCurationTest(t *testing.T) (*Service, *gorm.DB, *model.User) {
 func TestSkillCurationDisabledSnapshot(t *testing.T) {
 	svc, db, actor := newCurationTest(t)
 	// Snapshot of the original empty /skills data and fixed category order.
-	const original = `{"skills":[],"totalCount":0,"hasMore":false,"nextOffset":0,"page":1,"pageSize":20,"categories":[{"value":"drama","label":"短剧影视"},{"value":"ecommerce","label":"电商营销"},{"value":"creative","label":"创意设计"},{"value":"social","label":"社媒内容"},{"value":"others","label":"其他"}]}`
+	const original = `{"skills":[],"totalCount":0,"hasMore":false,"nextOffset":0,"page":1,"pageSize":20,"categories":[{"value":"drama","label":"短剧影视"},{"value":"ecommerce","label":"电商营销"},{"value":"creative","label":"创意设计"},{"value":"social","label":"社媒内容"},{"value":"audio","label":"音频配音"},{"value":"others","label":"其他"}]}`
 	if err := db.Create(&model.SkillCurationCategory{ID: "hidden", RootTag: "drama", Name: "Hidden", NormalizedName: "hidden", Enabled: true}).Error; err != nil {
 		t.Fatal(err)
 	}
