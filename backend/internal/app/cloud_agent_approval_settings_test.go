@@ -517,3 +517,64 @@ func TestCloudAgentImageApprovalRejectsEditedSettingsAfterDependencyChange(t *te
 		t.Fatal("rejected approval submitted a task")
 	}
 }
+
+// agentImagePresetApprovalFixture 与 agentImageApprovalFixture 相同，但给 grok-image
+// 声明了像素↔比例预设表。这正是线上出问题的形态：审批卡按像素提交画幅，任务准入把它
+// 归一化成比例（或反过来），两边字符串必然不等。
+func agentImagePresetApprovalFixture(t *testing.T) (*Service, *gorm.DB, cloudAgentMediaArgs) {
+	t.Helper()
+	s, db, a := agentMediaFixture(t)
+	capability := DefaultModelCapabilityConfigForModel(string(model.ChannelInterfaceGrokImage), "grok-image")
+	capability.Image.Size.Presets = []ImageSizePreset{
+		{Tier: "2k", Ratio: "1:1", Size: "2048x2048", Width: 2048, Height: 2048},
+		{Tier: "2k", Ratio: "16:9", Size: "2752x1536", Width: 2752, Height: 1536},
+	}
+	if err := validateImageCapabilityConfig(capability.Image); err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range []any{
+		&model.ChannelModel{ID: "grok-image", ChannelID: "channel", ModelKey: "grok-image", DisplayName: "grok-image", Capability: "image", Protocol: model.ChannelInterfaceGrokImage, CapabilityConfigJSON: mustEncodeModelCapabilityConfig(t, capability), BillingMode: "fixed_request", PriceConfigured: true, Enabled: true},
+		&model.ChannelModelPriceTier{ID: "grok-image-tier", ChannelModelID: "grok-image", SelectorKey: "{}", SelectorJSON: "{}", BillingMode: "fixed_request", UnitPriceMicrocredits: 1, PriceConfigured: true, Enabled: true},
+	} {
+		if err := db.Create(row).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	a.Mode, a.ChannelModelKey, a.Duration, a.VideoGenerateAudio = "image", "grok-image", 0, nil
+	// 审批卡按像素提交画幅：准入会把它归一化成模型声明的 16:9。
+	a.Size, a.Quality, a.ImageResolution, a.NodeID = "2752x1536", "", "2k", "image-shot-1"
+	a.ReferenceNodeIDs = []string{"cat"}
+	return s, db, a
+}
+
+// 回归：审批卡里改过画幅后点「同意执行」。审批期按模型目录归一化放行，执行期曾用旧的
+// 字符串严格比较把同一次审批判成“与审批参数不同”并驳回——用户视角就是点了「同意执行」
+// 卡片消失却立刻失败。执行期必须与审批期共用同一条归一化路径。
+func TestCloudAgentImageApprovalEditedSettingsSurviveExecutionPath(t *testing.T) {
+	s, _, a := agentImagePresetApprovalFixture(t)
+	run, _ := agentMediaRun(t, s, a, "request_approval")
+	if err := s.advanceCloudAgentByID("user", run.ID); err != nil {
+		t.Fatal(err)
+	}
+	run, _ = s.repo.CloudAgent("user", run.ID)
+	state, err := cloudAgentDecode(run)
+	if err != nil || state.Approval == nil {
+		t.Fatalf("missing approval: %v", err)
+	}
+	// 用户把画幅改成模型声明比例对应的另一组像素值。
+	settings := CloudAgentMediaSettings{ChannelID: "channel", ChannelModelKey: "grok-image", Size: "2752x1536", ImageResolution: "2k"}
+	if err := s.DecideCloudAgentApproval("user", run.ID, state.Approval.ID, "approve", "", &settings); err != nil {
+		t.Fatalf("edited approval was rejected: %v", err)
+	}
+	run, _ = s.repo.CloudAgent("user", run.ID)
+	state, err = cloudAgentDecode(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.MediaTaskID == "" {
+		t.Fatalf("edited approval submitted no task: status=%s failure=%q", run.Status, run.FailureMessage)
+	}
+	if run.Status == "failed" {
+		t.Fatalf("edited approval failed the run: %q", run.FailureMessage)
+	}
+}

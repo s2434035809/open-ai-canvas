@@ -74,6 +74,23 @@ describe("Agent SSE recovery", () => {
         await api.decideAgentApproval("run/id", "approval/id", "approve", "", signal, mediaSettings);
         expect(requests).toEqual([["/agent/runs/run%2Fid/approvals/approval%2Fid/decision", { decision: "approve", reason: undefined, mediaSettings }, { signal }]]);
     });
+    it("strips server-owned generation intent from the approval settings body", async () => {
+        // 回归：审批卡展示的是完整 generate_media 参数，未改动设置时若整份展开回传，
+        // 后端 DisallowUnknownFields 会把 decision 判成 400，审批卡不关闭，
+        // 用户看到的就是「点了同意执行没反应」。
+        const requests: unknown[][] = [];
+        transport.http.post = async (...args: unknown[]) => { requests.push(args); return { accepted: true }; };
+        await api.decideAgentApproval("run", "approval", "approve", "", undefined, {
+            channelId: "CHANNEL_000023", channelModelKey: "gpt-image-2.5-1k",
+            size: "1024x1824", quality: "medium",
+            prompt: "漫画海报", referenceNodeIds: ["image-dog-1"], nodeId: "image-dog-poster-1", snapshotHash: "abc",
+        } as never);
+        const body = requests[0][1] as { mediaSettings: Record<string, unknown> };
+        expect(Object.keys(body.mediaSettings).sort()).toEqual(["channelId", "channelModelKey", "quality", "size"]);
+        for (const forbidden of ["prompt", "referenceNodeIds", "nodeId", "snapshotHash"]) {
+            expect(forbidden in body.mediaSettings).toBe(false);
+        }
+    });
     it.each([401, 403, 404, 422])("stops immediately on definitive %s", async (status) => {
         let requests = 0;
         globalThis.fetch = (async () => { requests++; return new Response("", { status }); }) as typeof fetch;

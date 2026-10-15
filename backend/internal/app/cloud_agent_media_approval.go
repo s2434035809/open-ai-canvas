@@ -131,44 +131,8 @@ func replaceCloudAgentPreparedLeases(repo *repository.Repository, userID, runID,
 	return repo.ReplaceCloudAgentResourceLeases(userID, runID, approvalID, ids, prepared.Quote.ExpiresAt)
 }
 
-func validateCloudAgentResolvedMediaOptions(requested, resolvedInput map[string]any) error {
-	resolvedOptions, _ := resolvedInput["capabilityOptions"].(map[string]any)
-	resolvedConfig, _ := resolvedInput["config"].(map[string]any)
-	if raw := requested["imageParameters"]; raw != nil {
-		var values map[string]any
-		if encoded, ok := raw.(string); ok {
-			if err := json.Unmarshal([]byte(encoded), &values); err != nil {
-				return creationConflict("图片参数格式无效")
-			}
-		} else {
-			values, _ = raw.(map[string]any)
-		}
-		for name, value := range values {
-			if resolvedOptions[name] != value {
-				return creationConflict("模型解析后的图片参数与审批内容不同")
-			}
-		}
-	}
-	for _, key := range []string{"size", "imageResolution", "videoSeconds", "vquality", "quality", "count", "videoGenerateAudio", "videoWatermark", "videoArkPrivateAssetUpload"} {
-		requestedValue := stringValue(requested[key])
-		if key == "quality" && requestedValue != "" {
-			if _, declared := resolvedOptions[key]; !declared && !strings.EqualFold(requestedValue, stringValue(resolvedOptions["imageResolution"])) {
-				return creationConflict("所选图片模型未声明质量参数，请使用模型声明的图片分辨率或质量选项")
-			}
-		}
-		resolved := stringValue(resolvedOptions[key])
-		if resolved == "" {
-			resolved = stringValue(resolvedConfig[key])
-		}
-		if requestedValue != "" && !strings.EqualFold(requestedValue, resolved) {
-			return creationConflict("模型解析后的生成规格与审批参数不同，请重新读取目录并审批")
-		}
-	}
-	return nil
-}
-
 // cloudAgentResolvedMediaOptionKeys 是任务准入会按模型能力重新解析的生成规格键。
-// 与 validateCloudAgentResolvedMediaOptions 的检查范围保持一致，便于日志对照。
+// 审批期与执行期的归一化都必须按这组键记录差异。
 var cloudAgentResolvedMediaOptionKeys = []string{"size", "imageResolution", "videoSeconds", "vquality", "quality", "count", "videoGenerateAudio", "videoWatermark", "videoArkPrivateAssetUpload"}
 
 // logCloudAgentResolvedMediaNormalization 记录审批改参后被模型目录归一化的规格差异。

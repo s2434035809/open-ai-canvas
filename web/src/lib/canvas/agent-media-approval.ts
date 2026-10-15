@@ -3,7 +3,10 @@ import { isCanvasNodeGenerating } from "@/lib/canvas/canvas-node-task-state";
 import type { CanvasNodeData } from "@/types/canvas";
 import { logicalModelIDForConfig, modelOptionName, resolveModelChannel, selectableModelsByCapability, type AiConfig } from "@/stores/use-config-store";
 
+export { AGENT_MEDIA_SETTING_KEYS, agentMediaSettingsEqual, normalizeAgentMediaSettings } from "@/services/api/agent";
+
 export type AgentImageApproval = AgentMediaSettings & { prompt: string; referenceNodeIds: string[] };
+
 export type AgentVideoApproval = AgentImageApproval & { referenceTransientIds: string[]; sourceNodeId: string };
 
 export function agentVideoApproval(detail: Record<string, unknown>): AgentVideoApproval | null {

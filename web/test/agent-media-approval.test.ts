@@ -2,6 +2,8 @@ import { describe, expect, it } from "bun:test";
 import { AGENT_APPROVAL_SUPERSEDED_BY_NODE, agentApprovalMatchesSettings, agentApprovalModel, agentApprovalModelSelection, agentApprovalTargetGenerating, agentImageApproval, agentMediaApprovalTargetNodeId, agentVideoApproval } from "../src/lib/canvas/agent-media-approval";
 import type { CanvasNodeData } from "../src/types/canvas";
 import { createModelChannel, defaultConfig, encodeChannelModel } from "../src/stores/use-config-store";
+import { agentMediaSettingsEqual, normalizeAgentMediaSettings } from "../src/services/api/agent";
+import type { AgentMediaSettings } from "../src/services/api/agent";
 
 describe("image generation approval settings", () => {
     const args = { mode: "image", prompt: "保持参考图产品外观", size: "1024x1024", quality: "high", channelId: "platform", channelModelKey: "gpt-image-2", referenceNodeIds: ["product"] };
@@ -71,5 +73,54 @@ describe("approval target already generating on the canvas", () => {
 
     it("uses the same decision value as the backend", () => {
         expect(AGENT_APPROVAL_SUPERSEDED_BY_NODE).toBe("superseded_by_node");
+    });
+});
+
+describe("approval decision request body", () => {
+    it("never ships server-owned generation intent to the decision endpoint", () => {
+        // 审批卡直接把 generate_media 参数摊开展示，未改动设置时 value 为空，
+        // 组件曾用 `value || initial` 让整份初始参数（含 prompt/referenceNodeIds）
+        // 随 { ...settings } 回传，后端 DisallowUnknownFields 判 400，
+        // 用户看到的就是「点了同意执行没反应」。
+        const approval = agentImageApproval({ toolName: "generate_media", arguments: {
+            mode: "image", prompt: "漫画海报", size: "1024x1824", quality: "medium",
+            channelId: "CHANNEL_000023", channelModelKey: "gpt-image-2.5-1k",
+            nodeId: "image-dog-poster-1", snapshotHash: "abc", title: "漫画海报 · 金毛犬",
+            referenceNodeIds: ["image-dog-1"], referenceTransientIds: ["tmp-1"], sourceNodeId: "image-dog-1",
+        } });
+        expect(approval?.prompt).toBe("漫画海报");
+
+        // 未改设置时面板的提交值：白名单化的 initial 直接可用于提交。
+        const untouched = normalizeAgentMediaSettings(approval!);
+        expect(untouched && Object.keys(untouched).sort()).toEqual([
+            "channelId", "channelModelKey", "imageResolution", "imageParameters",
+            "logicalModelId", "quality", "size",
+        ].filter((key) => untouched[key as keyof typeof untouched] !== undefined).sort());
+        expect(JSON.stringify(untouched)).not.toContain("prompt");
+        expect(JSON.stringify(untouched)).not.toContain("referenceNodeIds");
+        expect(JSON.stringify(untouched)).not.toContain("snapshotHash");
+        expect(JSON.stringify(untouched)).not.toContain("nodeId");
+
+        // 改过设置后同样只带白名单字段，且画幅覆盖真正生效。
+        const edited = normalizeAgentMediaSettings({ ...approval!, size: "9:16", quality: "high" });
+        expect(edited?.size).toBe("9:16");
+        expect(edited?.quality).toBe("high");
+        expect("prompt" in (edited as object)).toBe(false);
+        expect("referenceNodeIds" in (edited as object)).toBe(false);
+    });
+
+    it("keeps transient and video-only fields out of an image decision", () => {
+        const settings = normalizeAgentMediaSettings({
+            size: "16:9", quality: "720p", durationSeconds: 8,
+            videoGenerateAudio: true, videoWatermark: false, videoArkPrivateAssetUpload: true,
+            prompt: "x", referenceNodeIds: ["a"], sourceNodeId: "b",
+        } as AgentMediaSettings);
+        expect(settings).toEqual({ size: "16:9", quality: "720p", durationSeconds: 8, videoGenerateAudio: true, videoWatermark: false, videoArkPrivateAssetUpload: true });
+    });
+
+    it("treats an unedited approval and a whitespace-equivalent edit as the same retry", () => {
+        expect(agentMediaSettingsEqual({ size: "9:16", quality: "medium", prompt: "p" } as AgentMediaSettings, { size: "9:16", quality: "medium" })).toBe(true);
+        expect(agentMediaSettingsEqual({ size: "9:16", quality: "medium" }, { size: "9:16", quality: "high" })).toBe(false);
+        expect(agentMediaSettingsEqual(undefined, undefined)).toBe(true);
     });
 });

@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { ImageSettingsPanel } from "@/components/image-settings-panel";
 import { ModelPicker } from "@/components/model-picker";
 import type { CanvasTheme } from "@/lib/canvas-theme";
-import { agentApprovalModel, agentApprovalModelSelection, type AgentImageApproval } from "@/lib/canvas/agent-media-approval";
+import { agentApprovalModel, agentApprovalModelSelection, normalizeAgentMediaSettings, type AgentImageApproval } from "@/lib/canvas/agent-media-approval";
 import { modelCapabilityConfigFor, normalizeImageValue } from "@/lib/model-capabilities";
 import { resolveCompatibleModel, type ModelRequirements } from "@/lib/model-selection";
 import type { AgentMediaSettings } from "@/services/api/agent";
@@ -17,7 +17,10 @@ export function CanvasAgentImageApprovalSettings({ initial, value, onChange, the
 }) {
     const effective = useEffectiveConfig();
     const config = useMemo(() => ({ ...effective, channels: effective.channels.filter((channel) => channel.scope === "system" || channel.id === PUBLIC_MODEL_CATALOG_ID) }), [effective]);
-    const settings = value || initial;
+    // 审批卡展示的是完整 generate_media 参数（含 prompt、referenceNodeIds）。这些字段由
+    // 服务端持有，回传会被审批接口判为 400、审批卡永远关不掉，所以这里只以白名单字段
+    // 作为设置基线，后续 onChange({ ...settings }) 也就不会把只读字段带进请求体。
+    const settings: AgentMediaSettings = value ?? normalizeAgentMediaSettings(initial) ?? initial;
     const model = agentApprovalModel(config, settings);
     const requirements: ModelRequirements = {
         capability: "image",

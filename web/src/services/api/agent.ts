@@ -16,6 +16,42 @@ export type AgentMediaSettings = {
     videoWatermark?: boolean;
     videoArkPrivateAssetUpload?: boolean;
 };
+/**
+ * 审批决策接口只接受这组生成参数：它们由用户在本机审批卡里编辑，服务端按同一套
+ * 模型能力契约重新解析（见后端 CloudAgentMediaSettings）。generate_media 的其余
+ * 参数（prompt、referenceNodeIds、nodeId、snapshotHash、title 等）是服务端持有的
+ * 生成意图，客户端回传会被请求体的 DisallowUnknownFields 判为 400。
+ */
+export const AGENT_MEDIA_SETTING_KEYS = [
+    "logicalModelId",
+    "channelId",
+    "channelModelKey",
+    "size",
+    "imageResolution",
+    "imageParameters",
+    "quality",
+    "durationSeconds",
+    "videoGenerateAudio",
+    "videoWatermark",
+    "videoArkPrivateAssetUpload",
+] as const;
+
+/** 只保留审批接口白名单字段；undefined 不落键，保持请求体最小。 */
+export function normalizeAgentMediaSettings(settings: AgentMediaSettings | undefined): AgentMediaSettings | undefined {
+    if (!settings) return undefined;
+    const normalized: Record<string, unknown> = {};
+    for (const key of AGENT_MEDIA_SETTING_KEYS) {
+        const value = settings[key];
+        if (value !== undefined) normalized[key] = value;
+    }
+    return normalized as AgentMediaSettings;
+}
+
+/** 提交体与所选设置是否一致：重试确认用它，避免把别的字段差异当成同一次成功。 */
+export function agentMediaSettingsEqual(left: AgentMediaSettings | undefined, right: AgentMediaSettings | undefined): boolean {
+    return JSON.stringify(normalizeAgentMediaSettings(left) ?? null) === JSON.stringify(normalizeAgentMediaSettings(right) ?? null);
+}
+
 export type AgentProfileScope = "user" | "project" | "canvas";
 
 export type AgentProfileLayer = {
@@ -186,7 +222,11 @@ export function undoAgentCanvasRun(runId: string, input: { stepId?: string; expe
 }
 
 export async function decideAgentApproval(runId: string, approvalId: string, decision: "approve" | "reject", reason?: string, signal?: AbortSignal, mediaSettings?: AgentMediaSettings) {
-    return http.post<{ accepted: boolean }>(`/agent/runs/${encodeURIComponent(runId)}/approvals/${encodeURIComponent(approvalId)}/decision`, { decision, reason: reason?.trim() || undefined, ...(mediaSettings ? { mediaSettings } : {}) }, { signal });
+    // 后端对该请求体启用了 DisallowUnknownFields：审批卡展示的是完整 generate_media
+    // 参数，多带一个 prompt/referenceNodeIds 就整条 400，审批卡不关闭，用户看到的是
+    // 「点了同意执行没反应」。这里统一按白名单收敛，调用方无需各自记得过滤。
+    const settings = normalizeAgentMediaSettings(mediaSettings);
+    return http.post<{ accepted: boolean }>(`/agent/runs/${encodeURIComponent(runId)}/approvals/${encodeURIComponent(approvalId)}/decision`, { decision, reason: reason?.trim() || undefined, ...(settings ? { mediaSettings: settings } : {}) }, { signal });
 }
 
 export function subscribeAgentEvents(runId: string, onEvent: (event: AgentEvent) => void, options: { after?: number; onError?: (error: unknown) => void; onConnectionChange?: (status: "connecting" | "connected" | "reconnecting" | "disconnected") => void; timeoutMs?: number } = {}) {

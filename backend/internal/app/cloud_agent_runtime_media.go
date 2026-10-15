@@ -98,10 +98,13 @@ func (s *Service) enqueueCloudAgentTask(run *model.CloudAgentExecution, state *c
 		return err
 	}
 	if media != nil {
-		requested, _ := req.Input["config"].(map[string]any)
-		if err := validateCloudAgentResolvedMediaOptions(requested, input); err != nil {
-			return s.cloudAgentMediaError(run, state, "admission", false, false, err)
-		}
+		// 常规任务准入已把审批卡里改过的画幅/质量按模型目录归一化，审批期同样如此
+		// （见 updateCloudAgentMediaApproval）。这里再拿审批参数做字符串严格相等，会把
+		// 每一次“改参后同意执行”都判成“与审批参数不同”并驳回——用户视角就是点了
+		// 「同意执行」卡片消失却立刻失败。提交规格与已批准规格、报价的一致性由同一个
+		// 写事务里的 validateCloudAgentPreparedAdmission（ResolvedHash/QuoteHash/
+		// 节点级依赖哈希）保证，归一化差异只记录日志。
+		logCloudAgentResolvedMediaNormalization(run.ID, req.Input["config"], task.InputJSON)
 	}
 	if err = s.protectTaskSecrets(input); err != nil {
 		if media != nil {
