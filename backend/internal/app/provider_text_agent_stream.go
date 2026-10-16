@@ -179,10 +179,31 @@ func (p *streamingAgentParser) consumeChatCompletionEvent(payload map[string]int
 				p.toolCallByID[id] = index
 			}
 			if name := stringField(function, "name"); name != "" {
-				current.name += name
+				current.name = mergeToolNameFragment(current.name, name)
 			}
 			current.arguments += stringField(function, "arguments")
 		}
+	}
+}
+
+// mergeToolNameFragment 合并工具名分片。
+//
+// 标准 OpenAI 语义只在首片带 name（或无 name 的纯增量分片），直接拼接即可；
+// 但部分网关（DSH 网关已实测复现）会在每个分片上重发完整工具名，按增量拼接
+// 会把名字重复 N 次，超出运行时 80 字符上限后被判为结构性无效调用而整步失败。
+// 这里按前缀关系区分「完整名快照」与「真增量分片」：重复/前缀退回不叠加。
+func mergeToolNameFragment(current string, fragment string) string {
+	switch {
+	case fragment == current:
+		return current
+	case current == "":
+		return fragment
+	case strings.HasPrefix(fragment, current):
+		return fragment
+	case strings.HasPrefix(current, fragment):
+		return current
+	default:
+		return current + fragment
 	}
 }
 

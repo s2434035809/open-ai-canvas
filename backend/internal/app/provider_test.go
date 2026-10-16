@@ -786,6 +786,97 @@ data: [DONE]
 	}
 }
 
+// DSH 网关（以及同类的非标准实现）会在每个流式分片上重发完整工具名，而不是只
+// 在首片给 name。按增量拼接会把名字重复 N 次，超出运行时 80 字符上限后被判为结构性
+// 无效调用，整步硬失败。这里覆盖三种分片形态：整名重发、真增量、标准首片带名。
+func TestStreamingAgentParserMergesRepeatedFullToolName(t *testing.T) {
+	cases := []struct {
+		name          string
+		stream        string
+		wantName      string
+		wantArguments string
+	}{
+		{
+			name: "整名重发（DSH 网关实测形态）",
+			stream: `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"canvas_get_state","arguments":""}}]}}]}
+
+data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"canvas_get_state","arguments":"{}"}}]}}]}
+
+data: [DONE]
+
+`,
+			wantName:      "canvas_get_state",
+			wantArguments: "{}",
+		},
+		{
+			name: "整名重发多轮且拼接分片混用",
+			stream: `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-2","function":{"name":"canvas_apply_ops","arguments":"{\"ops\":"}}]}}]}
+
+data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"canvas_apply_ops","arguments":"[]}"}}]}}]}
+
+data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"canvas_apply_ops","arguments":""}}]}}]}
+
+data: [DONE]
+
+`,
+			wantName:      "canvas_apply_ops",
+			wantArguments: `{"ops":[]}`,
+		},
+		{
+			name: "标准协议：仅首片带 name",
+			stream: `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-3","function":{"name":"canvas_read","arguments":"{\"nodeId\":"}}]}}]}
+
+data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"n1\"}"}}]}}]}
+
+data: [DONE]
+
+`,
+			wantName:      "canvas_read",
+			wantArguments: `{"nodeId":"n1"}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			parser := newStreamingAgentParser("chat-completion", nil)
+			parser.consume("text/event-stream", []byte(tc.stream))
+			parser.flush()
+			result, err := parser.result()
+			if err != nil {
+				t.Fatalf("streamingAgentParser.result() error = %v", err)
+			}
+			calls, _ := result["toolCalls"].([]interface{})
+			if len(calls) != 1 {
+				t.Fatalf("toolCalls = %#v, want 1 call", calls)
+			}
+			call, _ := calls[0].(map[string]interface{})
+			function, _ := call["function"].(map[string]interface{})
+			if function["name"] != tc.wantName {
+				t.Fatalf("tool name = %q, want %q (len %d)", function["name"], tc.wantName, len(tc.wantName))
+			}
+			if function["arguments"] != tc.wantArguments {
+				t.Fatalf("arguments = %q, want %q", function["arguments"], tc.wantArguments)
+			}
+		})
+	}
+}
+
+// 名字分片真增量时仍要能拼起来（例如网关把 "canvas_apply_ops" 拆成多片下发）。
+func TestMergeToolNameFragmentAppendsTrueDeltas(t *testing.T) {
+	cases := []struct{ current, fragment, want string }{
+		{"", "canvas_get_state", "canvas_get_state"},
+		{"canvas_get_state", "canvas_get_state", "canvas_get_state"},
+		{"canvas_get_state", "", "canvas_get_state"},
+		{"canvas_", "get_state", "canvas_get_state"},
+		{"canvas_", "canvas_", "canvas_"},
+		{"canvas_", "ops", "canvas_ops"},
+	}
+	for _, tc := range cases {
+		if got := mergeToolNameFragment(tc.current, tc.fragment); got != tc.want {
+			t.Fatalf("mergeToolNameFragment(%q, %q) = %q, want %q", tc.current, tc.fragment, got, tc.want)
+		}
+	}
+}
+
 func TestStreamingAgentParserPreservesResponsesFunctionCallItemID(t *testing.T) {
 	parser := newStreamingAgentParser("responses", nil)
 	parser.consume("text/event-stream", []byte(`event: response.output_item.added
