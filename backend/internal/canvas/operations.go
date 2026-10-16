@@ -206,6 +206,14 @@ func setCanvasPath(target map[string]any, path string, raw json.RawMessage) erro
 // canvasNodeBookkeepingFields 是节点顶层的写入簿记字段，补丁按后写覆盖，不参与冲突基线校验。
 var canvasNodeBookkeepingFields = map[string]struct{}{"updatedAt": {}}
 
+// canvasServerOwnedConvergingFields 是服务端自行回写、客户端也会独立算出同一结果的
+// 节点身份字段。生成素材身份 metadata.assetId 由 taskId 与输出序号确定性派生
+// （见 generationMediaAssetID），Agent 与生成回写都会补写它。
+// 客户端基线常滞后一轮：它仍会把该字段算成“要改成 X”，而服务端已经是 X。
+// 这种写入不改变任何内容，拒绝它却会让整笔保存连同用户的真实编辑一起被冻结在
+// 未确认队列里按旧基线反复重放，形成无法自愈的 409。写成不同值仍然严格校验。
+var canvasServerOwnedConvergingFields = map[string]struct{}{"metadata.assetId": {}}
+
 func canvasOperationConflict(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", ErrCanvasOperationConflict, fmt.Sprintf(format, args...))
 }
@@ -249,6 +257,26 @@ func canvasExpectedValueMatches(actual any, exists bool, expected json.RawMessag
 		return false
 	}
 	return jsonEqual(actual, expectedValue)
+}
+
+// canvasConvergesToCurrent 报告请求要写入的值是否已经是服务端当前值。
+// 这类写入不改变任何内容，可以跳过基线校验：并发方的结果没有被覆盖，
+// 而拒绝它只会把幂等写入误判成冲突。
+func canvasConvergesToCurrent(actual any, exists bool, desired json.RawMessage) bool {
+	if len(desired) == 0 {
+		return false
+	}
+	if string(desired) == "null" {
+		return !exists || actual == nil
+	}
+	if !exists {
+		return false
+	}
+	var desiredValue any
+	if json.Unmarshal(desired, &desiredValue) != nil {
+		return false
+	}
+	return jsonEqual(actual, desiredValue)
 }
 
 func canvasObjectExpectedMatches(actual map[string]any, expected json.RawMessage) bool {
@@ -298,6 +326,11 @@ func applyCanvasOperations(payload map[string]json.RawMessage, operations []Canv
 					continue
 				}
 				actual, exists := canvasPathValue(nodes[index], path)
+				// 收敛写入：请求要把服务端自有的身份字段写成当前已有的值，没有任何改动可应用。
+				// 见 TestApplyCanvasOperationsAcceptsConvergingAssetID 与 RejectsDivergentAssetID。
+				if _, serverOwned := canvasServerOwnedConvergingFields[path]; serverOwned && canvasConvergesToCurrent(actual, exists, op.Patch[path]) {
+					continue
+				}
 				if !canvasExpectedValueMatches(actual, exists, expected) {
 					return canvasOperationConflict("节点 %q 的字段 %q 已被其他写入修改", op.ID, path)
 				}

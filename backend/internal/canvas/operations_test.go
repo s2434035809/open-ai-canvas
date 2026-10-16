@@ -332,3 +332,84 @@ func newCanvasOperationTestService(t *testing.T) *Service {
 	t.Cleanup(func() { _ = sqlDB.Close() })
 	return New(repository.New(db), nil)
 }
+
+// 服务端生成回写会自行补上节点 metadata.assetId（cloud_agent_media.go），
+// 客户端随后按自己的本地基线提交同一个确定性身份。两者写的是同一个值，
+// 客户端基线却常常滞后一轮：把它判成冲突会让整笔保存被拒，而未确认队列
+// 会连同旧 before 反复重放，形成无法自愈的 409。
+func TestApplyCanvasOperationsAcceptsConvergingAssetID(t *testing.T) {
+	svc := newCanvasOperationTestService(t)
+	if err := svc.repo.Create(&model.CanvasProject{
+		ID: "canvas", UserID: "user", PayloadJSON: `{"nodes":[{"id":"shot_ep01_13","metadata":{"taskId":"task-1","assetId":"generation_same","prompt":"旧"}}],"connections":[]}`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// 客户端基线里还没有 assetId（before=null），补丁要写的正是服务端已有的同一个值。
+	request := CanvasOperationsRequest{MutationID: "converging-asset-id", Operations: []CanvasOperation{{Type: "patch_node", ID: "shot_ep01_13", Patch: map[string]json.RawMessage{
+		"metadata.prompt":  json.RawMessage(`"新"`),
+		"metadata.assetId": json.RawMessage(`"generation_same"`),
+	}, Before: map[string]json.RawMessage{
+		"metadata.prompt":  json.RawMessage(`"旧"`),
+		"metadata.assetId": json.RawMessage(`null`),
+	}}}}
+	if _, err := svc.ApplyUserCanvasOperations("user", "canvas", request); err != nil {
+		t.Fatalf("converging assetId rejected the whole patch: %v", err)
+	}
+	project, err := svc.repo.CanvasProjectForUser("user", "canvas")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Nodes []struct {
+			Metadata map[string]any `json:"metadata"`
+		} `json:"nodes"`
+	}
+	if err := json.Unmarshal([]byte(project.PayloadJSON), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if got := payload.Nodes[0].Metadata["prompt"]; got != "新" {
+		t.Fatalf("user edit was dropped: got %v", got)
+	}
+	if got := payload.Nodes[0].Metadata["assetId"]; got != "generation_same" {
+		t.Fatalf("server assetId changed: got %v", got)
+	}
+}
+
+// 收敛豁免只覆盖“写成当前已有的值”。客户端要把 assetId 改成别的身份，
+// 说明它指向了另一个素材，仍然必须按基线拒绝。
+func TestApplyCanvasOperationsRejectsDivergentAssetID(t *testing.T) {
+	svc := newCanvasOperationTestService(t)
+	if err := svc.repo.Create(&model.CanvasProject{
+		ID: "canvas", UserID: "user", PayloadJSON: `{"nodes":[{"id":"node","metadata":{"taskId":"task-1","assetId":"generation_server"}}],"connections":[]}`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	request := CanvasOperationsRequest{MutationID: "divergent-asset-id", Operations: []CanvasOperation{{Type: "patch_node", ID: "node", Patch: map[string]json.RawMessage{
+		"metadata.assetId": json.RawMessage(`"generation_client"`),
+	}, Before: map[string]json.RawMessage{"metadata.assetId": json.RawMessage(`"generation_same"`)}}}}
+	_, err := svc.ApplyUserCanvasOperations("user", "canvas", request)
+	var appError *kernel.AppError
+	if !errors.As(err, &appError) || appError.Status != http.StatusConflict {
+		t.Fatalf("divergent assetId error = %v, want conflict", err)
+	}
+}
+
+// 收敛豁免只作用于请求里真正要写的字段，不能顺手放宽其他字段的基线校验。
+func TestApplyCanvasOperationsConvergenceDoesNotRelaxOtherFields(t *testing.T) {
+	svc := newCanvasOperationTestService(t)
+	if err := svc.repo.Create(&model.CanvasProject{
+		ID: "canvas", UserID: "user", PayloadJSON: `{"nodes":[{"id":"node","metadata":{"assetId":"generation_same","prompt":"服务端新值"}}],"connections":[]}`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	request := CanvasOperationsRequest{MutationID: "converging-asset-id-stale-prompt", Operations: []CanvasOperation{{Type: "patch_node", ID: "node", Patch: map[string]json.RawMessage{
+		"metadata.assetId": json.RawMessage(`"generation_same"`),
+		"metadata.prompt":  json.RawMessage(`"覆盖服务端"`),
+	}, Before: map[string]json.RawMessage{
+		"metadata.assetId": json.RawMessage(`null`),
+		"metadata.prompt":  json.RawMessage(`"客户端旧值"`),
+	}}}}
+	if _, err := svc.ApplyUserCanvasOperations("user", "canvas", request); err == nil {
+		t.Fatal("stale sibling field was accepted")
+	}
+}
