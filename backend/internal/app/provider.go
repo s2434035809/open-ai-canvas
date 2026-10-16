@@ -303,6 +303,11 @@ func providerMediaHydrationPolicyFor(ctx context.Context, input canvasGeneration
 
 // providerPrefersMediaURLs 只列出明确接受远程 URL 的协议。
 // 需要 multipart/原始字节的协议继续走字节路径，不能为了减少下载而擅自改变请求合同。
+//
+// openai-image 也在此列：它的声明式插件带参考图时走 JSON /v1/images/edits，
+// image_url 直接取媒体值，可以接收签名 URL；而部分 OpenAI 兼容网关只接受
+// http(s) 地址、会以内嵌 data URL 不是「有效 url」拒绝请求。遮罩编辑仍由下面的
+// Mask 分支拦住，继续发送真实文件字节。
 func providerPrefersMediaURLs(interfaceType string, input canvasGenerationInput) bool {
 	if input.Mask != nil {
 		// OpenAI 图片编辑等 multipart 请求需要真实文件字节，遮罩场景不能改发 URL。
@@ -310,6 +315,7 @@ func providerPrefersMediaURLs(interfaceType string, input canvasGenerationInput)
 	}
 	switch strings.TrimSpace(interfaceType) {
 	case string(model.ChannelInterfaceChatCompletion), string(model.ChannelInterfaceOpenAIResponse), string(model.ChannelInterfaceClaudeAPI),
+		string(model.ChannelInterfaceOpenAIImage),
 		string(model.ChannelInterfaceGrokImage), string(model.ChannelInterfaceVolcengineArkImage), string(model.ChannelInterfaceVolcengineArkAgentPlanImage),
 		string(model.ChannelInterfaceXAIVideo), string(model.ChannelInterfaceNovitaVideo),
 		string(model.ChannelInterfaceMiniMaxVideo), string(model.ChannelInterfaceNewAPIVideo),
