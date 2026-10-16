@@ -1,5 +1,11 @@
 # CHANGELOG
 
+## 未发布
+
+- 修复 DX OS 内点击下载无反应：宿主给第三方 APP 的沙箱 iframe 不含 `allow-downloads`，页面内的 `<a download>` 与 `blob:` 点击会被静默拦掉。适配层改为经媒体代理取回字节后调用宿主 `file.export`（`destination: 'download'`）落盘，失败写入 `/api/__dxos/diag` 诊断日志并 `ui.notify` 提示用户，不再吞掉错误。
+- DX OS 应用清单新增 `app.yingce-main.file.write`（`file.export` 的前置权限）与 `app.yingce-main.ui.notify`。该变更只改 JS 不生效，需提高 `version`/`build` 后重新导入安装包。
+
+
 ## v1.6.8.4
 
 - 新增远程服务商目录与秘塔一键接入：支持密钥验证、推荐模型、价格档及加价率配置，记录渠道与模型的目录来源。
