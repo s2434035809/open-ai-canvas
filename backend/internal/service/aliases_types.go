@@ -11,6 +11,7 @@ type (
 	PortfolioDocumentSummary               = app.PortfolioDocumentSummary
 	PortfolioDocumentView                  = app.PortfolioDocumentView
 	SavePortfolioDocumentRequest           = app.SavePortfolioDocumentRequest
+	BindProjectAssetImageRequest           = app.BindProjectAssetImageRequest
 	PaymentOrderQuery                      = app.PaymentOrderQuery
 	PaymentReconciliationQuery             = app.PaymentReconciliationQuery
 	CloudAgentRequest                      = app.CloudAgentRequest

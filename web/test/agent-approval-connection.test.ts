@@ -35,7 +35,8 @@ test("同意执行前的画布保存失败只提示，不阻断审批提交", as
     const panel = await Bun.file(new URL("../src/components/canvas/canvas-cloud-agent-panel.tsx", import.meta.url)).text();
     const body = panel.match(/const submitApproval = async[\s\S]*?\n    \};/)?.[0];
     expect(body).toBeDefined();
-    expect(body).toContain("await saveRemoteUserDataNow();");
+    // 断言保存语义，不绑定参数形态：上游 v1.6.8.6 起按画布隔离，会传 canvasId。
+    expect(body).toMatch(/await saveRemoteUserDataNow\([^)]*\);/);
     // 保存被包进独立的 try/catch，失败只发提示
     const guard = body!.match(/if \(decision === "approve"\) \{[\s\S]*?\n            \}/)?.[0];
     expect(guard).toBeDefined();
