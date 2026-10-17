@@ -143,7 +143,7 @@ sync.installRemoteUserDataAutoSync();
 // Independent module state/storage/session, sharing only the server fixture.
 const peerDir = join(dir, "peer");
 mkdirSync(peerDir);
-for (const name of ["dependencies.ts", "resources.ts", "media.ts", "content.ts", "rebase.ts", "progress.ts", "sync.ts"]) writeFileSync(join(peerDir, name), readFileSync(join(dir, name), "utf8").replaceAll(dir, peerDir));
+for (const name of ["dependencies.ts", "resources.ts", "media.ts", "storable-blob.ts", "content.ts", "rebase.ts", "progress.ts", "sync.ts"]) writeFileSync(join(peerDir, name), readFileSync(join(dir, name), "utf8").replaceAll(dir, peerDir));
 const peerSync: typeof sync = await import(join(peerDir, "sync.ts"));
 const peer = await import(join(peerDir, "dependencies.ts"));
 const peerProgress: typeof import("@/stores/use-sync-progress-store") = await import(join(peerDir, "progress.ts"));
