@@ -29,6 +29,7 @@ export default defineConfig({
                 target: apiProxyTarget,
                 changeOrigin: true,
                 xfwd: true,
+                ws: true,
             },
             "/oauth/linuxdo/callback": {
                 target: apiProxyTarget,
