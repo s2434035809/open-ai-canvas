@@ -11,7 +11,7 @@ import { nanoid } from "nanoid";
 import type { CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { agentSubmissionErrorTitle } from "@/lib/canvas/agent-error-presentation";
-import { waitForCanvasSync } from "@/lib/canvas/sync-recovery";
+import { CanvasSyncPendingError, waitForCanvasSync } from "@/lib/canvas/sync-recovery";
 import {
     cancelAgentRun,
     getAgentCapabilities,
@@ -125,7 +125,6 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, se
         if (curationState.curation?.enabled) setSkillTag("all");
     }, [curationState.curation?.enabled]);
     const [busy, setBusy] = useState(false);
-    const [submissionCanvasNotice, setSubmissionCanvasNotice] = useState("");
     const [approvalSubmitting, setApprovalSubmitting] = useState(false);
     const [exporting, setExporting] = useState(false);
     const [stopping, setStopping] = useState(false);
@@ -159,7 +158,7 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, se
             canvasId,
             applyPatches: (patches) => applyAgentCanvasPatches(canvasId, patches),
             refresh: () => refreshCanvasAfterAgent(canvasId),
-            onError: (cause) => setMessages((current) => appendAgentError(current, `canvas-sync-${canvasId}`, cause, "画布同步冲突")),
+            onError: (cause) => console.warn("画布后台同步尚未完成", cause),
         });
         canvasSyncRef.current = sync;
         return () => {
@@ -680,10 +679,8 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, se
                 if (currentScope.current !== scope) return;
                 if (!capabilities.permissionModes.includes(permissionMode)) throw new Error("当前后端不支持所选 Agent 权限，请更新后端");
                 if (selectedSkillIds.length && !capabilities.skills) throw new Error("当前后端尚未接入技能库");
-                const canvasSync = await prepareCanvasForCloudAction(canvasId);
+                await prepareCanvasForCloudAction(canvasId);
                 if (currentScope.current !== scope) return;
-                setSubmissionCanvasNotice(canvasSync.source === "cloud" ? "本次 Agent 使用云端已保存画布；当前本地修改仍保留，后台继续同步。" : "");
-                const cloudNodeIds = canvasSync.source === "cloud" ? new Set(canvasSync.project.nodes.map((node) => node.id)) : undefined;
                 const agentConfig = { ...config, model: effectiveModel };
                 const requestConfig = resolveModelRequestConfig(agentConfig, effectiveModel);
                 const logicalModelId = logicalModelIDForConfig(agentConfig);
@@ -695,7 +692,7 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, se
                     model: modelOptionName(effectiveModel) || undefined,
                     ...(logicalModelId ? { logicalModelId } : requestConfig.channelId ? { channelId: requestConfig.channelId, channelModelKey: modelOptionName(effectiveModel) || undefined } : {}),
                     skillIds: [...new Set([...selectedSkillIds, ...resolveSkillMentions(value, installedSkills).map((skill) => skill.skillId)])],
-                    focusNodeIds: selectedNodeIds.length <= 8 ? selectedNodeIds.filter((id) => !cloudNodeIds || cloudNodeIds.has(id)) : [],
+                    focusNodeIds: selectedNodeIds.length <= 8 ? selectedNodeIds : [],
                     permissionMode,
                     contextScope,
                     budget: { maxCredits: positiveNumber(maxCredits), maxGenerationTasks: permissionMode === "read_only" ? 0 : Number(maxGenerationTasks), maxVideoSeconds: permissionMode === "read_only" ? 0 : Number(maxVideoSeconds) },
@@ -752,6 +749,7 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, se
             if (currentScope.current === scope) pendingSubmission.current = null;
         } catch (cause) {
             if (currentScope.current !== scope) return;
+            if (cause instanceof CanvasSyncPendingError) return;
             canvasEditLeases.agentRejected(canvasId, cause);
             if (!accepted) {
                 setPrompt(value);
@@ -819,9 +817,8 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, se
         setApprovalSubmitting(true);
         try {
             if (decision === "approve") {
-                const canvasSync = await prepareCanvasForCloudAction(canvasId);
+                await prepareCanvasForCloudAction(canvasId);
                 if (currentScope.current !== scope) return;
-                setSubmissionCanvasNotice(canvasSync.source === "cloud" ? "本次审批使用云端已保存画布；本地待同步修改仍保留。" : "");
             }
             if (currentScope.current !== scope) return;
             await decideAgentApproval(runId, approvalId, decision, approval.reason, AbortSignal.timeout(15_000), mediaSettings);
@@ -835,6 +832,7 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, se
             }
         } catch (cause) {
             if (currentScope.current !== scope) return;
+            if (cause instanceof CanvasSyncPendingError) return;
             // A timed-out response is ambiguous: query the durable decision before
             // asking the user to retry. The backend treats identical decisions idempotently.
             try {
@@ -1094,7 +1092,6 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, se
                                         onApprove={(settings) => void submitApproval("approve", settings)}
                                         onReject={() => void submitApproval("reject")}
                                     />
-                                    {submissionCanvasNotice ? <div role="status" className="px-5 py-2 text-xs" style={{ color: theme.node.muted }}>{submissionCanvasNotice}</div> : null}
                                     {otherAgentRunning ? (
                                         <div role="status" className="px-5 py-2 text-xs" style={{ color: theme.node.muted }}>
                                             {canvasAgent?.cleanupPending ? "当前画布的 Agent 正在收尾，完成后即可使用" : "当前画布已有其他 Agent 正在使用，结束后即可发送"}

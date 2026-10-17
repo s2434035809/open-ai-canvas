@@ -3,10 +3,11 @@ import { formatLocalSavedRemotePending } from "@/services/user-data-sync";
 import { ApiError } from "@/services/api/request";
 
 describe("本地已保存时的可操作恢复提示", () => {
-    test("连接未确认不伪报云端成功，提供编辑、重连与导出出口", () => {
+    test("连接未确认不伪报云端成功，不再要求用户处理同步", () => {
         const text = formatLocalSavedRemotePending("素材已在本地保存", new Error("网络中断"));
-        expect(text).toContain("后台等待同步，可继续编辑");
-        expect(text).toContain("导出草稿");
+        expect(text).toContain("正在自动同步");
+        expect(text).not.toContain("导出");
+        expect(text).not.toContain("另存");
         expect(text).not.toContain("已保存到云端");
         expect(text).not.toContain("同步失败");
     });

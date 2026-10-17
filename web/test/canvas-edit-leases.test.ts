@@ -247,14 +247,14 @@ test("input during release waits for a fresh server token before saving", async 
     expect(f.client.pending("canvas", "node")).toBe(true);
 });
 
-test("failed acquisitions retain local input and recover automatically on the next edit", async () => {
+test("failed acquisitions retain input without per-keystroke requests and recover on automatic save", async () => {
     const f = fixture();
     f.fail();
     f.client.input("canvas", "node");
     await settle();
     for (let i = 0; i < 20; i++) expect(f.client.input("canvas", "node")).toBe(true);
     await settle();
-    expect(f.calls).toEqual(["acquire", "acquire"]);
+    expect(f.calls).toEqual(["acquire"]);
     expect(f.client.state("canvas", "node").blocked).toBe(false);
     expect(f.client.versions("canvas")).toEqual({ node: 21 });
     await expect(f.client.proofs("canvas", nodes)).rejects.toThrow("offline");
@@ -265,7 +265,7 @@ test("failed acquisitions retain local input and recover automatically on the ne
     expect((await f.client.proofs("canvas", nodes))[0].token).toBe("token-1");
 });
 
-test("remote ownership blocks editing until server expiry and scope changes discard grants", async () => {
+test("remote ownership never blocks local input and scope changes discard grants", async () => {
     const f = fixture();
     f.client.status("canvas", {
         revision: 1,
@@ -278,8 +278,9 @@ test("remote ownership blocks editing until server expiry and scope changes disc
             },
         ],
     });
-    expect(f.client.state("canvas", "node").blocked).toBe(true);
-    expect(f.client.input("canvas", "node")).toBe(false);
+    expect(f.client.state("canvas", "node").blocked).toBe(false);
+    expect(f.client.state("canvas", "node").remote).toBe(true);
+    expect(f.client.input("canvas", "node")).toBe(true);
     expect(f.calls).toEqual([]);
     f.time(30000);
     expect(f.client.state("canvas", "node").blocked).toBe(false);
@@ -330,20 +331,16 @@ test("an open editor without further input does not renew after a confirmed save
     expect(f.client.state("canvas", "node").typing).toBe(false);
 });
 
-test("cloud recovery drops displaced drafts without clearing newer input or other canvas leases", async () => {
+test("server rejection invalidates the proof without discarding current input or other canvas leases", async () => {
     const f = fixture();
     f.client.input("canvas", "node");
     f.client.input("other", "node");
     await settle();
-    const versions = f.client.versions("canvas");
     f.client.input("canvas", "node");
-    f.client.discardLocalDraft("canvas", versions);
+    f.client.invalidate("canvas", nodes);
     expect(f.client.pending("canvas", "node")).toBe(true);
-    f.client.discardLocalDraft("canvas", f.client.versions("canvas"));
-    expect(f.client.pending("canvas", "node")).toBe(false);
     expect(f.client.pending("other", "node")).toBe(true);
-    expect(f.client.input("canvas", "node")).toBe(true);
-    await settle();
+    expect(f.client.versions("canvas")).toEqual({ node: 2 });
     expect((await f.client.proofs("canvas", nodes))[0].token).toBe("token-3");
 });
 
@@ -356,4 +353,30 @@ test("released grants are omitted from later movement or result saves", async ()
     await f.client.tick("canvas");
     expect(f.calls).toEqual(["acquire", "release"]);
     expect(await f.client.proofs("canvas", nodes)).toEqual([]);
+});
+
+test("save reacquires an expired lease without requiring another keystroke", async () => {
+    const f = fixture();
+    f.client.input("canvas", "node");
+    await settle();
+    f.time(30001);
+    expect((await f.client.proofs("canvas", nodes))[0].token).toBe("token-2");
+    expect(f.calls).toEqual(["acquire", "acquire"]);
+    expect(f.client.pending("canvas", "node")).toBe(true);
+});
+
+test("save recovers a failed acquisition after connectivity returns", async () => {
+    const f = fixture();
+    f.fail();
+    f.client.input("canvas", "node");
+    await settle();
+    f.fail(false);
+    expect((await f.client.proofs("canvas", nodes))[0].token).toBe("token-1");
+    expect(f.calls).toEqual(["acquire", "acquire"]);
+});
+
+test("replayed journal obtains this session's lease instead of reusing expired credentials", async () => {
+    const f = fixture();
+    const proofs = await f.client.proofs("canvas", nodes, [{ nodeId: "node", sessionId: "old-window", token: "expired" }]);
+    expect(proofs).toEqual([{ nodeId: "node", sessionId: "browser-account-a", token: "token-1" }]);
 });

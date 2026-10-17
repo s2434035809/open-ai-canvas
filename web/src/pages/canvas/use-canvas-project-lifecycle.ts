@@ -1,4 +1,5 @@
 import { mergeAgentCanvasEditor } from "@/lib/canvas/agent-canvas-patch";
+import { rebaseCanvasLocalEdits } from "@/lib/canvas/canvas-sync-rebase";
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import { App } from "antd";
 import { useNavigate } from "react-router";
@@ -192,11 +193,11 @@ export function useCanvasProjectLifecycle({
             })
             .catch((error) => {
                 if (cancelled) return;
-                useSyncProgressStore.getState().setProjectProgress(projectId, { phase: "pending", errorKind: "network", message: "正在后台恢复云端连接，可继续编辑或导出草稿" });
+                useSyncProgressStore.getState().setProjectProgress(projectId, { phase: "pending", errorKind: "network", message: error instanceof Error ? `画布同步失败：${error.message}` : "画布同步失败" });
                 // A cached editor may have become ready during this very load.
                 // Do not cover it with the cold-start error screen.
                 if (editorReadyRef.current) setLoadError("");
-                else setLoadError(error instanceof Error ? error.message : "云端暂不可达，可返回创建本地画布");
+                else setLoadError(error instanceof Error ? error.message : "画布加载失败");
             });
         return () => {
             cancelled = true;
@@ -220,19 +221,21 @@ export function useCanvasProjectLifecycle({
 
     useEffect(() => subscribeAgentCanvasRefresh((project, previous, source) => {
         if (!projectLoaded || project.id !== projectId) return;
-        if (source === "recovery") {
+        if (source === "sync") {
             const fallbackTheme = useCanvasThemeStore.getState().theme;
-            const appearance = project.appearance ? normalizeCanvasAppearance(project.appearance, fallbackTheme) : canvasAppearanceForTheme(fallbackTheme);
+            const editor = { ...(previous || project), nodes: nodesRef.current, connections: connectionsRef.current, chatSessions: chatSessionsRef.current, activeChatId: activeChatIdRef.current, appearance: canvasAppearance, backgroundMode, showImageInfo };
+            const merged = previous ? rebaseCanvasLocalEdits(previous, project, editor) : project;
+            const appearance = merged.appearance ? normalizeCanvasAppearance(merged.appearance, fallbackTheme) : canvasAppearanceForTheme(fallbackTheme);
             const snapshot: CanvasHistorySnapshot = {
-                nodes: project.nodes,
-                connections: project.connections,
-                chatSessions: project.chatSessions || [],
-                activeChatId: project.activeChatId || null,
+                nodes: merged.nodes,
+                connections: merged.connections,
+                chatSessions: merged.chatSessions || [],
+                activeChatId: merged.activeChatId || null,
                 canvasAppearance: appearance,
-                backgroundMode: project.backgroundMode || DEFAULT_CANVAS_BACKGROUND_MODE,
-                showImageInfo: project.showImageInfo || false,
+                backgroundMode: merged.backgroundMode || DEFAULT_CANVAS_BACKGROUND_MODE,
+                showImageInfo: merged.showImageInfo || false,
             };
-            observedContentRef.current = snapshot;
+            observedContentRef.current = { ...snapshot, nodes: project.nodes, connections: project.connections, chatSessions: project.chatSessions || [], activeChatId: project.activeChatId || null, canvasAppearance: project.appearance ? normalizeCanvasAppearance(project.appearance, fallbackTheme) : canvasAppearanceForTheme(fallbackTheme), backgroundMode: project.backgroundMode || DEFAULT_CANVAS_BACKGROUND_MODE, showImageInfo: project.showImageInfo || false };
             nodesRef.current = snapshot.nodes;
             connectionsRef.current = snapshot.connections;
             chatSessionsRef.current = snapshot.chatSessions;
@@ -244,7 +247,6 @@ export function useCanvasProjectLifecycle({
             setCanvasAppearance(snapshot.canvasAppearance);
             setBackgroundMode(snapshot.backgroundMode);
             setShowImageInfo(snapshot.showImageInfo);
-            resetHistory(snapshot);
             setLoadError("");
             return;
         }
@@ -264,8 +266,8 @@ export function useCanvasProjectLifecycle({
         setConnections(merged.connections);
         const previousIds = new Set(previous?.nodes.map((node) => node.id));
         const created = project.nodes.filter((node) => !previousIds.has(node.id));
-        if (created.length && source !== "sync") setAgentCreatedNodes({ projectId: project.id, nodes: created });
-    }), [projectId, projectLoaded, nodesRef, connectionsRef, chatSessionsRef, activeChatIdRef, setNodes, setConnections, setChatSessions, setActiveChatId, setCanvasAppearance, setBackgroundMode, setShowImageInfo, resetHistory]);
+        if (created.length) setAgentCreatedNodes({ projectId: project.id, nodes: created });
+    }), [projectId, projectLoaded, nodesRef, connectionsRef, chatSessionsRef, activeChatIdRef, canvasAppearance, backgroundMode, showImageInfo, setNodes, setConnections, setChatSessions, setActiveChatId, setCanvasAppearance, setBackgroundMode, setShowImageInfo]);
 
     useEffect(() => {
         if (!projectLoaded || !sessionHydrated) return;
@@ -315,7 +317,7 @@ export function useCanvasProjectLifecycle({
 
     const createAndOpenProject = useCallback(() => {
         void createCanvasProjectWithRemoteSync(`自由画布 ${useCanvasStore.getState().projects.length + 1}`).then(({ id, syncError }) => {
-            if (syncError) message.warning(syncError instanceof Error ? `画布已在本地创建，云端同步失败：${syncError.message}` : "画布已在本地创建，云端同步失败");
+            if (syncError) console.warn("新画布等待后台同步", syncError);
             navigate(`/canvas/${id}`);
         });
     }, [message, navigate]);
@@ -366,26 +368,23 @@ export function useCanvasProjectLifecycle({
     }, [activeChatId, backgroundMode, canvasAppearance, chatSessions, connectionsRef, nodesRef, projectId, showImageInfo, updateProject, viewportRef]);
 
     const saveCanvasProject = useCallback(async (options: { requireRemote?: boolean } = {}): Promise<boolean> => {
-        let localPersisted = false;
         try {
             await persistLocalEdits();
-            localPersisted = true;
-        } catch {
-            message.warning("本地存储暂不可用，当前编辑仍在页面中，请从同步菜单导出草稿");
+        } catch (error) {
+            console.warn("画布本地持久化暂未完成", error);
         }
         try {
             if (options.requireRemote === false) {
                 await saveRemoteUserDataNow(projectId);
                 message.success("画布已保存到云端");
             } else {
-                const result = await prepareCanvasForCloudAction(projectId);
-                if (result.source === "cloud") message.info("接下来的操作使用云端已保存版本；本地修改仍待同步，可继续编辑或导出");
-                else message.success("画布已保存到云端");
+                await prepareCanvasForCloudAction(projectId);
+                message.success("画布已保存到云端");
             }
             return true;
-        } catch {
-            message.info("云端暂不可达，当前画布可继续编辑、导出或另存新画布");
-            return options.requireRemote === false && localPersisted;
+        } catch (error) {
+            console.warn("画布等待后台同步", error);
+            return false;
         }
     }, [message, persistLocalEdits, projectId]);
 

@@ -97,7 +97,9 @@ export function createCanvasEditLeaseClient(deps: Dependencies) {
         const error = entry?.error?.message || (expiredDraft ? "编辑权限已过期，草稿已保留" : undefined);
         // Pending input remains a local draft; proofs() waits for the server grant.
         return {
-            blocked: remoteOwner,
+            // Leases serialize cloud writes, never local input. A competing
+            // device's draft is merged after the current holder commits.
+            blocked: false,
             remote: remoteOwner,
             acquiring,
             typing: remoteOwner || Boolean(entry && !entry.error && entry.expires > now),
@@ -123,14 +125,11 @@ export function createCanvasEditLeaseClient(deps: Dependencies) {
             sessionId = deps.sessionId();
             emit();
         },
-        discardLocalDraft(canvasId: string, versions: Record<string, number>) {
+        invalidate(canvasId: string, nodeIds: ReadonlySet<string>) {
             checkScope();
-            const entries = own.get(canvasId);
-            for (const [nodeId, version] of Object.entries(versions)) {
-                const entry = entries?.get(nodeId);
-                if (entry && entry.version <= version) entries!.delete(nodeId);
+            for (const [nodeId, entry] of own.get(canvasId) || []) {
+                if (nodeIds.has(nodeId)) entry.expires = 0;
             }
-            // Do not erase newer input, other sessions' leases or an active Agent run.
             emit();
         },
         agent(canvasId: string) {
@@ -160,7 +159,7 @@ export function createCanvasEditLeaseClient(deps: Dependencies) {
         },
         input(canvasId: string, nodeId: string) {
             checkScope();
-            if (!canvasId || !nodeId || state(canvasId, nodeId).blocked) return false;
+            if (!canvasId || !nodeId) return false;
             let entries = own.get(canvasId);
             if (!entries) {
                 entries = new Map();
@@ -180,7 +179,7 @@ export function createCanvasEditLeaseClient(deps: Dependencies) {
             }
             entry.version++;
             entry.lastInput = deps.now();
-            if (!entry.pending && (entry.error || entry.expires <= deps.now())) void acquire(canvasId, nodeId, entry);
+            if (!entry.pending && !entry.error && entry.expires <= deps.now() && !state(canvasId, nodeId).remote) void acquire(canvasId, nodeId, entry);
             emit();
             return true;
         },
@@ -199,14 +198,26 @@ export function createCanvasEditLeaseClient(deps: Dependencies) {
             checkScope();
             return Object.fromEntries([...(own.get(canvasId) || [])].map(([nodeId, entry]) => [nodeId, entry.version]));
         },
-        async proofs(canvasId: string, nodeIds: ReadonlySet<string>) {
+        async proofs(canvasId: string, nodeIds: ReadonlySet<string>, previousProofs: CanvasEditProof[] = []) {
             checkScope();
             const startedScope = scope;
             const result: CanvasEditProof[] = [];
+            // Journals survive reloads; their old browser's credentials do not.
+            // Reacquire with this session without changing the mutation identity.
+            for (const proof of previousProofs) {
+                if (!nodeIds.has(proof.nodeId) || own.get(canvasId)?.has(proof.nodeId)) continue;
+                let entries = own.get(canvasId);
+                if (!entries) own.set(canvasId, entries = new Map());
+                entries.set(proof.nodeId, { proof: { nodeId: proof.nodeId, sessionId, token: "" }, version: 1, savedVersion: 0, lastInput: deps.now(), lastRenew: 0, expires: 0 });
+            }
             for (const [nodeId, entry] of own.get(canvasId) || []) {
                 if (!nodeIds.has(nodeId)) continue;
                 while (entry.pending) await entry.pending;
                 if (!valid(canvasId, nodeId, entry, startedScope)) throw new Error("账号已切换，已停止旧会话提交");
+                if (entry.version > entry.savedVersion && (entry.error || entry.expires <= deps.now())) {
+                    await acquire(canvasId, nodeId, entry);
+                    if (!valid(canvasId, nodeId, entry, startedScope)) throw new Error("账号已切换，已停止旧会话提交");
+                }
                 if (entry.error) throw entry.error;
                 if (!entry.proof.token) continue;
                 // An expired proof is still sent: the server may already have
@@ -226,6 +237,31 @@ export function createCanvasEditLeaseClient(deps: Dependencies) {
                 }
             }
             emit();
+        },
+        async yield(canvasId: string) {
+            checkScope();
+            const startedScope = scope;
+            for (const [nodeId, entry] of own.get(canvasId) || []) {
+                while (entry.pending) await entry.pending;
+                if (!valid(canvasId, nodeId, entry, startedScope) || !entry.proof.token || entry.expires <= deps.now()) continue;
+                const pending = deps.change(canvasId, entry.proof, "release")
+                    .then(() => {
+                        if (!valid(canvasId, nodeId, entry, startedScope)) return;
+                        entry.expires = 0;
+                        entry.proof = { ...entry.proof, token: "" };
+                        entry.error = undefined;
+                        if (remote.get(canvasId)?.get(nodeId)?.sessionId === sessionId) remote.get(canvasId)?.delete(nodeId);
+                    })
+                    .catch((error: unknown) => {
+                        if (valid(canvasId, nodeId, entry, startedScope)) entry.error = error instanceof Error ? error : new Error("编辑租约释放失败");
+                    })
+                    .finally(() => {
+                        if (entry.pending === pending) entry.pending = undefined;
+                        emit();
+                    });
+                entry.pending = pending;
+                await pending;
+            }
         },
         pending(canvasId: string, nodeId: string) {
             const entry = own.get(canvasId)?.get(nodeId);
