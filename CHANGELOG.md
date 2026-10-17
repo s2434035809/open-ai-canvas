@@ -5,6 +5,11 @@
 - 修复 DX OS 内点击下载无反应：宿主给第三方 APP 的沙箱 iframe 不含 `allow-downloads`，页面内的 `<a download>` 与 `blob:` 点击会被静默拦掉。适配层改为经媒体代理取回字节后调用宿主 `file.export`（`destination: 'download'`）落盘，失败写入 `/api/__dxos/diag` 诊断日志并 `ui.notify` 提示用户，不再吞掉错误。
 - DX OS 应用清单新增 `app.yingce-main.file.write`（`file.export` 的前置权限）与 `app.yingce-main.ui.notify`。该变更只改 JS 不生效，需提高 `version`/`build` 后重新导入安装包。
 
+## v1.6.8.8
+
+- 修复发布质量检查：清理画布同步代码中的 Git 冲突标记，补齐 PostgreSQL 迁移清单中的画布编辑租约表。
+- 修复旧缓存与云端画布合并时的三方合并与未确认操作重放逻辑。
+
 ## v1.6.8.6
 
 - 修复一张画布的云端冲突阻塞其他画布保存和 Agent 提交：前台保存按画布隔离，素材-only 保存不触发画布写入，后台全局同步仍保留各画布独立错误状态。
