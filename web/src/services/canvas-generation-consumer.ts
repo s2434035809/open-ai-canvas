@@ -548,11 +548,10 @@ export async function persistCanvasGenerationEffect(input: CanvasGenerationEffec
                     localProjects: [delta.localProject],
                     baseRevision,
                 });
-                if (rebased.conflicts.some((conflict) => conflict.reason === "concurrent-update")) {
-                    reconcileLiveOnFailure = true;
-                    throw new Error("画布生成副作用与并发修改冲突");
-                }
-                if (rebased.conflicts.length) {
+                // The rebaser already resolves concurrent fields in favor of the
+                // latest durable value and merges unrelated generated fields.
+                // Commit that final document instead of rejecting the whole result.
+                if (rebased.conflicts.some((conflict) => conflict.reason !== "concurrent-update")) {
                     reconcileLiveOnFailure = true;
                     throw new Error("画布生成副作用与已删除内容冲突");
                 }

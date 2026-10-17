@@ -97,7 +97,7 @@ export function createCanvasEditLeaseClient(deps: Dependencies) {
         const error = entry?.error?.message || (expiredDraft ? "编辑权限已过期，草稿已保留" : undefined);
         // Pending input remains a local draft; proofs() waits for the server grant.
         return {
-            blocked: remoteOwner || Boolean(error),
+            blocked: remoteOwner,
             remote: remoteOwner,
             acquiring,
             typing: remoteOwner || Boolean(entry && !entry.error && entry.expires > now),
@@ -121,6 +121,16 @@ export function createCanvasEditLeaseClient(deps: Dependencies) {
             agentObservations.clear();
             scope = deps.scope();
             sessionId = deps.sessionId();
+            emit();
+        },
+        discardLocalDraft(canvasId: string, versions: Record<string, number>) {
+            checkScope();
+            const entries = own.get(canvasId);
+            for (const [nodeId, version] of Object.entries(versions)) {
+                const entry = entries?.get(nodeId);
+                if (entry && entry.version <= version) entries!.delete(nodeId);
+            }
+            // Do not erase newer input, other sessions' leases or an active Agent run.
             emit();
         },
         agent(canvasId: string) {
@@ -170,7 +180,7 @@ export function createCanvasEditLeaseClient(deps: Dependencies) {
             }
             entry.version++;
             entry.lastInput = deps.now();
-            if (!entry.pending && entry.expires <= deps.now()) void acquire(canvasId, nodeId, entry);
+            if (!entry.pending && (entry.error || entry.expires <= deps.now())) void acquire(canvasId, nodeId, entry);
             emit();
             return true;
         },

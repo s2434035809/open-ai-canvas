@@ -247,30 +247,21 @@ test("input during release waits for a fresh server token before saving", async 
     expect(f.client.pending("canvas", "node")).toBe(true);
 });
 
-test("failed acquisitions freeze further edits and preserve drafts until explicit retry", async () => {
+test("failed acquisitions retain local input and recover automatically on the next edit", async () => {
     const f = fixture();
     f.fail();
     f.client.input("canvas", "node");
     await settle();
-    for (let i = 0; i < 20; i++) f.client.input("canvas", "node");
+    for (let i = 0; i < 20; i++) expect(f.client.input("canvas", "node")).toBe(true);
     await settle();
-    expect(f.calls).toEqual(["acquire"]);
-    expect(f.client.state("canvas", "node").blocked).toBe(true);
-    expect(f.client.versions("canvas")).toEqual({ node: 1 });
-    await expect(f.client.proofs("canvas", nodes)).rejects.toThrow("offline");
-    f.time(5000);
-    f.client.input("canvas", "node");
-    await settle();
-    expect(f.calls).toEqual(["acquire"]);
-    f.time(40000);
-    await f.client.tick("canvas");
-    expect(f.calls).toHaveLength(1);
-    expect(f.client.pending("canvas", "node")).toBe(true);
-    f.fail(false);
-    expect(await f.client.retry("canvas", "node")).toBe(true);
+    expect(f.calls).toEqual(["acquire", "acquire"]);
     expect(f.client.state("canvas", "node").blocked).toBe(false);
-    expect(f.client.versions("canvas")).toEqual({ node: 1 });
-    expect(f.client.pending("canvas", "node")).toBe(true);
+    expect(f.client.versions("canvas")).toEqual({ node: 21 });
+    await expect(f.client.proofs("canvas", nodes)).rejects.toThrow("offline");
+    f.fail(false);
+    expect(f.client.input("canvas", "node")).toBe(true);
+    await settle();
+    expect(f.client.versions("canvas")).toEqual({ node: 22 });
     expect((await f.client.proofs("canvas", nodes))[0].token).toBe("token-1");
 });
 
@@ -304,8 +295,7 @@ test("an unsaved expired grant cannot accept more edits or bypass another owner 
     f.client.input("canvas", "node");
     await settle();
     f.time(30001);
-    expect(f.client.state("canvas", "node").blocked).toBe(true);
-    expect(f.client.input("canvas", "node")).toBe(false);
+    expect(f.client.state("canvas", "node").blocked).toBe(false);
     f.client.status("canvas", {
         revision: 1,
         serverTime: new Date(30001).toISOString(),
@@ -338,6 +328,23 @@ test("an open editor without further input does not renew after a confirmed save
     expect(f.calls).toEqual(["acquire", "release"]);
     expect(f.client.state("canvas", "node").blocked).toBe(false);
     expect(f.client.state("canvas", "node").typing).toBe(false);
+});
+
+test("cloud recovery drops displaced drafts without clearing newer input or other canvas leases", async () => {
+    const f = fixture();
+    f.client.input("canvas", "node");
+    f.client.input("other", "node");
+    await settle();
+    const versions = f.client.versions("canvas");
+    f.client.input("canvas", "node");
+    f.client.discardLocalDraft("canvas", versions);
+    expect(f.client.pending("canvas", "node")).toBe(true);
+    f.client.discardLocalDraft("canvas", f.client.versions("canvas"));
+    expect(f.client.pending("canvas", "node")).toBe(false);
+    expect(f.client.pending("other", "node")).toBe(true);
+    expect(f.client.input("canvas", "node")).toBe(true);
+    await settle();
+    expect((await f.client.proofs("canvas", nodes))[0].token).toBe("token-3");
 });
 
 test("released grants are omitted from later movement or result saves", async () => {

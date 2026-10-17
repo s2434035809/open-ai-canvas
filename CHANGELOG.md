@@ -5,6 +5,13 @@
 - 修复 DX OS 内点击下载无反应：宿主给第三方 APP 的沙箱 iframe 不含 `allow-downloads`，页面内的 `<a download>` 与 `blob:` 点击会被静默拦掉。适配层改为经媒体代理取回字节后调用宿主 `file.export`（`destination: 'download'`）落盘，失败写入 `/api/__dxos/diag` 诊断日志并 `ui.notify` 提示用户，不再吞掉错误。
 - DX OS 应用清单新增 `app.yingce-main.file.write`（`file.export` 的前置权限）与 `app.yingce-main.ui.notify`。该变更只改 JS 不生效，需提高 `version`/`build` 后重新导入安装包。
 
+## v1.6.8.9
+
+- 画布 Agent 新建对话不再自动安装或默认使用“影策短剧制作工作流”技能，技能由用户主动选择。
+- 首页灵感大厅默认每页展示 30 个，分页选项统一为 30、60、90。
+- 优化侧栏折叠态签到入口，改用居中礼物图标并保留领取金额提示。
+- 延续画布同步故障恢复、生成结果并发回写和不阻塞编辑修复。
+
 ## v1.6.8.8
 
 - 修复发布质量检查：清理画布同步代码中的 Git 冲突标记，补齐 PostgreSQL 迁移清单中的画布编辑租约表。

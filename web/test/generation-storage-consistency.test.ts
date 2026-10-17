@@ -83,6 +83,7 @@ test("已生成图片的副本在普通保存和新生成结果持久化后仍�
     expect(result.restored.map((node) => node.id)).toEqual(["source", "copy"]);
     expect(result.restored.find((node) => node.id === "source")?.metadata).toMatchObject({ content: "original-image", generationEffectKeys: ["attach-node:old-task:source:0"] });
     expect(result.restored.find((node) => node.id === "copy")?.metadata).toMatchObject({ content: "new-image", status: "success", generationEffectKeys: ["attach-node:new-task:copy:0"] });
+    expect(result.restored.find((node) => node.id === "copy")).toMatchObject({ title: "Latest user title", position: { x: 700, y: 500 } });
 });
 
 test("并发生成结果经真实持久化消费链路及重新读取后保留成功、失败和用户编辑", async () => {

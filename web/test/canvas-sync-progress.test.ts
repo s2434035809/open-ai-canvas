@@ -14,6 +14,7 @@ const paths: Record<string, string> = {
     "json-canonicalize": import.meta.resolve("json-canonicalize"),
     zustand: import.meta.resolve("zustand"),
     "@/services/api/resources": join(dir, "resources.ts"),
+    "@/lib/canvas/sync-recovery": fileURLToPath(new URL("lib/canvas/sync-recovery.ts", root)),
     "@/lib/canvas/canvas-content": join(dir, "content.ts"),
     "@/lib/storable-blob": join(dir, "storable-blob.ts"),
     "@/stores/use-sync-progress-store": join(dir, "progress.ts"),
@@ -32,7 +33,7 @@ writeFileSync(
     stubPath,
     `
 import { createStore } from ${JSON.stringify(import.meta.resolve("zustand/vanilla"))};
-export const fixture = { remote: undefined, remoteById: new Map(), writes: [], writesById: new Map(), reads: 0, readsById: new Map(), receipts: new Map(), errors: new Map(), remoteAssetsById: new Map(), assetReads: [], assetWrites: [], postHook: undefined, afterPostHook: undefined, flushes: 0, beforeFlush: undefined, readHook: undefined, flushError: undefined, setError: undefined, saveHook: undefined, scope: "sync-test-user", manualTimers: false, timers: new Map(), nextTimer: 100000, data: new Map() };
+export const fixture = { remote: undefined, remoteById: new Map(), writes: [], writesById: new Map(), reads: 0, readsById: new Map(), receipts: new Map(), errors: new Map(), assetReadErrors: new Map(), assetWriteErrors: new Map(), remoteAssetsById: new Map(), assetReads: [], assetWrites: [], postHook: undefined, afterPostHook: undefined, flushes: 0, beforeFlush: undefined, readHook: undefined, flushError: undefined, setError: undefined, saveHook: undefined, scope: "sync-test-user", manualTimers: false, timers: new Map(), nextTimer: 100000, data: new Map() };
 export const fixtureWindow = {
     setTimeout: (callback, delay) => { if (!fixture.manualTimers) return setTimeout(callback, delay); const id = fixture.nextTimer++; fixture.timers.set(id, { callback, delay }); return id; },
     clearTimeout: id => { if (!fixture.timers.delete(id)) clearTimeout(id); },
@@ -105,12 +106,14 @@ export async function applyRemoteCanvasOperations(id, request) {
     return response;
 }
 export async function getRemoteCanvasProject(id) { fixture.reads++; fixture.readsById.set(id, (fixture.readsById.get(id) ?? 0) + 1); const hook = fixture.readHook; fixture.readHook = undefined; await hook?.(id); return { project: structuredClone(remoteFor(id)) }; }
-export async function getRemoteAsset(id) { fixture.assetReads.push(id); return { asset: structuredClone(fixture.remoteAssetsById.get(id)) }; }
-export async function upsertRemoteAsset(asset) { fixture.assetWrites.push(structuredClone(asset)); fixture.remoteAssetsById.set(asset.id, structuredClone(asset)); }
+export async function getRemoteAsset(id) { fixture.assetReads.push(id); if (fixture.assetReadErrors.has(id)) throw fixture.assetReadErrors.get(id); return { asset: structuredClone(fixture.remoteAssetsById.get(id)) }; }
+export async function upsertRemoteAsset(asset) { fixture.assetWrites.push(structuredClone(asset)); if (fixture.assetWriteErrors.has(asset.id)) throw fixture.assetWriteErrors.get(asset.id); fixture.remoteAssetsById.set(asset.id, structuredClone(asset)); }
 export const assetForRemoteSync = asset => asset;
-export const deleteRemoteAssets = unexpected, deleteRemoteCanvasProject = unexpected, getRemoteAssetsByIds = unexpected, getRemoteUserDataSnapshot = unexpected, listRemoteAssetsPage = unexpected;
-export const getImageBlob = unexpected, getMediaBlob = unexpected, parseAssetRecordList = unexpected, rebaseAssetSnapshot = unexpected, canvasNodeToAsset = unexpected;
-export const canvasEditLeases = { reset() {}, session: () => "test-session", versions: () => ({}), proofs: async () => [], acknowledged() {} };
+export const getRemoteAssetsByIds = async ids => ({ assets: ids.map(id => fixture.remoteAssetsById.get(id)).filter(Boolean) });
+export const parseAssetRecordList = records => records;
+export const deleteRemoteAssets = unexpected, deleteRemoteCanvasProject = unexpected, getRemoteUserDataSnapshot = unexpected, listRemoteAssetsPage = unexpected;
+export const getImageBlob = unexpected, getMediaBlob = unexpected, rebaseAssetSnapshot = unexpected, canvasNodeToAsset = unexpected;
+export const canvasEditLeases = { reset() {}, session: () => "test-session", versions: () => ({}), proofs: async () => [], acknowledged() {}, discardLocalDraft() {} };
 export const useCanvasHistoryStore = {};
 `,
 );
@@ -220,6 +223,8 @@ beforeEach(async () => {
     fixture.receipts.clear();
     fixture.errors.clear();
     fixture.remoteAssetsById.clear();
+    fixture.assetReadErrors.clear();
+    fixture.assetWriteErrors.clear();
     fixture.assetReads = [];
     fixture.assetWrites = [];
     useAssetStore.setState({ assets: [] });
@@ -241,6 +246,169 @@ afterAll(() => {
 });
 
 describe("定向保存与旧 journal 的真实同步集成", () => {
+    test("素材上传失败只暂停引用它的画布，其他画布仍保存完成", async () => {
+        fixture.manualTimers = true;
+        const asset = { id: "asset", kind: "text", title: "Asset", data: { content: "Original" }, metadata: {}, createdAt: "2026-01-01", updatedAt: "2026-01-01" };
+        fixture.remoteAssetsById.set(asset.id, asset);
+        useAssetStore.setState({ assets: [asset] });
+        const b = { ...base(), id: "canvas-b", nodes: [], title: "B" };
+        fixture.remoteById.set(b.id, structuredClone(b));
+        useCanvasStore.setState({ projects: [base(), b] });
+        await reloadSession();
+        useAssetStore.setState({ assets: [{ ...asset, title: "Edited asset" }] });
+        useCanvasStore.setState({
+            projects: [
+                { ...base(), title: "A edit" },
+                { ...b, title: "B edit" },
+            ],
+        });
+        fixture.assetWriteErrors.set(asset.id, new ApiError("upload unavailable", { status: 503, retryable: true }));
+        await expect(sync.saveRemoteUserDataNow()).rejects.toThrow("upload unavailable");
+        expect(fixture.remoteById.get(b.id).title).toBe("B edit");
+        expect(fixture.writesById.has("canvas")).toBe(false);
+        expect(useSyncProgressStore.getState().syncingProjects.canvas.phase).toBe("pending");
+        expect(useSyncProgressStore.getState().syncingProjects[b.id].phase).toBe("done");
+        fixture.assetWriteErrors.clear();
+        await sync.saveRemoteUserDataNow("canvas");
+        expect(fixture.remote.title).toBe("A edit");
+    });
+
+    test("素材版本冲突自动备份并采用云端素材，不再永久阻止画布保存", async () => {
+        fixture.manualTimers = true;
+        const asset = { id: "asset", kind: "text", title: "Original", data: { content: "Original" }, metadata: {}, createdAt: "2026-01-01", updatedAt: "2026-01-01" };
+        useAssetStore.setState({ assets: [asset] });
+        fixture.remoteAssetsById.set(asset.id, { ...asset, title: "Cloud title", updatedAt: "2026-01-02" });
+        await reloadSession();
+        useAssetStore.setState({ assets: [{ ...asset, title: "Local title" }] });
+        edit({ title: "Canvas edit" });
+        await sync.saveRemoteUserDataNow("canvas");
+        expect(useAssetStore.getState().assets[0].title).toBe("Cloud title");
+        expect(fixture.remote.title).toBe("Canvas edit");
+        expect([...fixture.data.keys()].some((key) => key.startsWith("yingce:canvas-recovery:asset:asset:"))).toBe(true);
+    });
+
+    test("本地保存失败时 Agent 可读取已确认云端快照继续，未保存编辑仍保留", async () => {
+        fixture.manualTimers = true;
+        edit({ title: "Local unsaved" });
+        fixture.setError = new Error("IndexedDB unavailable");
+        const result = await sync.prepareCanvasForCloudAction("canvas");
+        expect(result.source).toBe("cloud");
+        if (result.source === "cloud") expect(result.project.title).toBe("Canvas");
+        expect(live().title).toBe("Local unsaved");
+        expect(fixture.writes).toHaveLength(0);
+    });
+
+    test.each([{ status: 400 }, { status: 422 }, { status: 409, reason: "canvas_mutation_id_reused" }])("旧后端和未细分明确拒绝也能自动采用云端：%j", async (options) => {
+        fixture.manualTimers = true;
+        edit({ title: "Rejected local edit" });
+        fixture.errors.set("canvas:1", new ApiError("rejected", options));
+        await sync.saveRemoteUserDataNow("canvas");
+        expect(live().title).toBe("Canvas");
+        expect(journal()).toEqual([]);
+        expect(fixture.writes).toHaveLength(1);
+    });
+
+    test("旧账号读取卡住时新账号不等待旧队列，晚响应不能覆盖新编辑", async () => {
+        fixture.manualTimers = true;
+        const entered = deferred();
+        const release = deferred();
+        fixture.readHook = async () => {
+            entered.resolve();
+            await release.promise;
+        };
+        const loading = sync.loadCanvasProjectForEditing("canvas").catch((error: unknown) => error);
+        await entered.promise;
+        sync.resetRemoteUserDataSync();
+        fixture.scope = "new-account";
+        await sync.withRemoteUserDataSyncExclusive(async () => {
+            edit({ title: "New account edit" });
+        });
+        expect(live().title).toBe("New account edit");
+        release.resolve();
+        expect(await loading).toBeInstanceOf(Error);
+        expect(live().title).toBe("New account edit");
+    });
+
+    test("同一画布重复保存只提交一个事务，不重复堆积请求", async () => {
+        fixture.manualTimers = true;
+        edit({ title: "Single flight" });
+        const entered = deferred();
+        const release = deferred();
+        fixture.postHook = async () => {
+            entered.resolve();
+            await release.promise;
+        };
+        const first = sync.saveRemoteUserDataNow("canvas");
+        await entered.promise;
+        const second = sync.saveRemoteUserDataNow("canvas");
+        release.resolve();
+        await Promise.all([first, second]);
+        expect(fixture.writes).toHaveLength(1);
+        expect(fixture.remote.title).toBe("Single flight");
+    });
+    test("媒体绑定拒绝后备份草稿和旧请求，自动采用云端且下一次编辑可保存", async () => {
+        fixture.manualTimers = true;
+        delete fixture.remote.nodes[0].metadata.assetId;
+        edit({ title: "Local draft" });
+        fixture.errors.set("canvas:1", new ApiError("media pending", { status: 400, reason: "canvas_media_assets_pending" }));
+        await sync.saveRemoteUserDataNow("canvas");
+        expect(live().title).toBe("Canvas");
+        expect(journal()).toEqual([]);
+        const backups = [...fixture.data.entries()].filter(([key]) => key.startsWith("yingce:canvas-recovery:canvas:"));
+        expect(backups).toHaveLength(1);
+        const backup = JSON.parse(backups[0][1]);
+        expect(backup.project.title).toBe("Local draft");
+        expect(backup.journal.request.mutationId).toBe(fixture.writes[0].mutationId);
+        expect(useSyncProgressStore.getState().syncingProjects.canvas.phase).toBe("done");
+        edit({ title: "Next edit" });
+        await sync.saveRemoteUserDataNow("canvas");
+        expect(fixture.remote.title).toBe("Next edit");
+        expect(fixture.writes[1].mutationId).not.toBe(fixture.writes[0].mutationId);
+    });
+
+    test("云端恢复落盘期间的新编辑继续保存，不被旧恢复结果覆盖", async () => {
+        fixture.manualTimers = true;
+        delete fixture.remote.nodes[0].metadata.assetId;
+        edit({ title: "Rejected draft" });
+        fixture.errors.set("canvas:1", new ApiError("conflict", { status: 409, reason: "canvas_field_conflict" }));
+        fixture.beforeFlush = () => edit({ title: "Typed during recovery" });
+        await sync.saveRemoteUserDataNow("canvas");
+        expect(live().title).toBe("Typed during recovery");
+        expect(fixture.remote.title).toBe("Typed during recovery");
+        expect(journal()).toEqual([]);
+    });
+
+    test("云端恢复备份期间切换账号不覆盖新账号画布", async () => {
+        fixture.manualTimers = true;
+        delete fixture.remote.nodes[0].metadata.assetId;
+        edit({ title: "Old account draft" });
+        fixture.errors.set("canvas:1", new ApiError("conflict", { status: 409, reason: "canvas_field_conflict" }));
+        fixture.saveHook = (key: string) => {
+            if (!key.startsWith("yingce:canvas-recovery:")) return;
+            sync.resetRemoteUserDataSync();
+            fixture.scope = "another-account";
+            edit({ title: "New account canvas" });
+        };
+        await expect(sync.saveRemoteUserDataNow("canvas")).rejects.toThrow("账号已切换");
+        expect(live().title).toBe("New account canvas");
+        expect(fixture.remote.title).toBe("Canvas");
+    });
+
+    test("冲突恢复备份不可落盘时内存保留可导出草稿，仍可采用云端继续", async () => {
+        fixture.manualTimers = true;
+        delete fixture.remote.nodes[0].metadata.assetId;
+        edit({ title: "Local draft" });
+        fixture.errors.set("canvas:1", new ApiError("conflict", { status: 409, reason: "canvas_field_conflict" }));
+        fixture.saveHook = (key: string) => {
+            if (key.startsWith("yingce:canvas-recovery:")) throw new Error("backup unavailable");
+        };
+        await sync.saveRemoteUserDataNow("canvas");
+        expect(live().title).toBe("Canvas");
+        expect(journal()).toEqual([]);
+        const exported = sync.canvasRecoveryExport("canvas");
+        expect(Object.values(exported.recoveryCopies).some((copy: any) => copy.project?.title === "Local draft")).toBe(true);
+        expect(fixture.remote.title).toBe("Canvas");
+    });
     test("旧空缓存打开更新的云端画布不能转成删除节点操作", async () => {
         fixture.manualTimers = true;
         const cached = { ...base(), nodes: [], revision: 7 };
@@ -304,19 +472,21 @@ describe("定向保存与旧 journal 的真实同步集成", () => {
         fixture.remote = { ...base(), revision: 8 };
         delete fixture.remote.nodes[0].metadata.assetId;
         fixture.setError = new Error("recovery write failed");
-        await expect(sync.loadCanvasProjectForEditing("canvas")).rejects.toThrow("recovery write failed");
-        expect(live().nodes).toEqual([]);
+        await sync.loadCanvasProjectForEditing("canvas");
+        expect(live().nodes).toHaveLength(1);
+        expect(Object.values(sync.canvasRecoveryExport("canvas").recoveryCopies).some((copy: any) => copy.project?.nodes?.length === 0)).toBe(true);
+        expect(useSyncProgressStore.getState().syncingProjects.canvas.localPhase).toBe("error");
         expect(fixture.remote.nodes).toHaveLength(1);
         expect(fixture.writes).toHaveLength(0);
     });
 
-    test("本地与云端修改同一标题时保留两边内容，拒绝静默覆盖", async () => {
+    test("本地与云端修改同一标题时备份草稿并自动采用云端", async () => {
         fixture.manualTimers = true;
         edit({ title: "Local title" });
         fixture.remote = { ...base(), revision: 8, title: "Remote title" };
         delete fixture.remote.nodes[0].metadata.assetId;
-        await expect(sync.loadCanvasProjectForEditing("canvas")).rejects.toThrow("冲突");
-        expect(live().title).toBe("Local title");
+        await sync.loadCanvasProjectForEditing("canvas");
+        expect(live().title).toBe("Remote title");
         expect(fixture.remote.title).toBe("Remote title");
         expect(fixture.writes).toHaveLength(0);
     });
@@ -343,16 +513,15 @@ describe("定向保存与旧 journal 的真实同步集成", () => {
         useCanvasStore.setState({ projects: [entry.prepared, { ...b, title: "B own edit" }] });
         const foreground = sync.saveRemoteUserDataNow(b.id);
         release.resolve();
-        expect(await background).toMatchObject({ message: "field conflict" });
+        expect(await background).toBeUndefined();
         await foreground;
         expect(fixture.writesById.get(b.id)).toHaveLength(1);
         expect(fixture.writesById.get(b.id)[0].operations).toContainEqual({ type: "set_field", field: "title", beforeValue: "B", value: "B own edit" });
         expect(fixture.remoteById.get(b.id).title).toBe("B own edit");
         expect(fixture.writesById.get("canvas")).toHaveLength(2);
-        expect(journal()).toHaveLength(1);
-        expect(journal()[0].projectId).toBe("canvas");
+        expect(journal()).toEqual([]);
         expect(useSyncProgressStore.getState().syncingProjects[b.id]).toMatchObject({ phase: "done", pendingChanges: 0 });
-        expect(useSyncProgressStore.getState().syncingProjects.canvas.phase).toBe("error");
+        expect(useSyncProgressStore.getState().syncingProjects.canvas.phase).toBe("done");
     });
 
     test("A 旧冲突后台在途时，revision0 且无 remote 的新建 B 仍能 scoped create_canvas 成功", async () => {
@@ -379,7 +548,7 @@ describe("定向保存与旧 journal 的真实同步集成", () => {
         expect(useCanvasStore.getState().openProject(b.id).revision).toBe(0);
         const creating = sync.saveRemoteUserDataNow(b.id);
         release.resolve();
-        expect(await background).toMatchObject({ message: "field conflict" });
+        expect(await background).toBeUndefined();
         await creating;
         const writes = fixture.writesById.get(b.id);
         expect(writes).toHaveLength(1);
@@ -391,9 +560,9 @@ describe("定向保存与旧 journal 的真实同步集成", () => {
         expect(useCanvasStore.getState().openProject(b.id)).toMatchObject({ id: b.id, title: b.title, revision: 1 });
         expect(fixture.readsById.get(b.id)).toBe(1);
         expect(fixture.writesById.get("canvas")).toHaveLength(2);
-        expect(journal()).toEqual([{ ...entry, request: fixture.writesById.get("canvas")[1] }]);
+        expect(journal()).toEqual([]);
         expect(useSyncProgressStore.getState().syncingProjects[b.id]).toMatchObject({ phase: "done", pendingChanges: 0, cloudRevision: 1 });
-        expect(useSyncProgressStore.getState().syncingProjects.canvas.phase).toBe("error");
+        expect(useSyncProgressStore.getState().syncingProjects.canvas.phase).toBe("done");
     });
 
     test("单独保存 B 不读取、不提交或重写 A pending entry", async () => {
@@ -549,9 +718,9 @@ describe("定向保存与旧 journal 的真实同步集成", () => {
         fixture.remote = taskProject("task-1", "2026-01-01T00:00:02Z");
         const originalRemote = structuredClone(fixture.remote);
         await restoreJournal([entry]);
-        await expect(sync.saveRemoteUserDataNow("canvas")).rejects.toThrow("field conflict");
+        await sync.saveRemoteUserDataNow("canvas");
         expect(fixture.writes).toEqual([entry.request]);
-        expect(journal()).toEqual([entry]);
+        expect(journal()).toEqual([]);
         expect(fixture.remote).toEqual(originalRemote);
         expect(fixture.receipts.size).toBe(0);
     });
@@ -637,16 +806,16 @@ describe("定向保存与旧 journal 的真实同步集成", () => {
         fixture.remote = taskProject(kind === "task" ? "other-task" : "task-1", "2026-01-01T00:00:02Z", kind === "prompt" ? "Remote prompt" : "Original prompt");
         const originalRemote = structuredClone(fixture.remote);
         await restoreJournal([entry]);
-        await expect(sync.saveRemoteUserDataNow("canvas")).rejects.toThrow("field conflict");
+        await sync.saveRemoteUserDataNow("canvas");
         expect(fixture.writes).toHaveLength(2);
         const fenced = structuredClone(fixture.writes[1]);
         expectFencedRetry(entry.request, fenced);
         expect(fixture.remote).toEqual(originalRemote);
         expect(fixture.receipts.size).toBe(0);
-        expect(journal()[0].request).toEqual(fenced);
-        await expect(sync.saveRemoteUserDataNow("canvas")).rejects.toThrow("field conflict");
-        expect(fixture.writes).toHaveLength(3);
-        expect(fixture.writes[2]).toEqual(fenced);
+        expect(journal()).toEqual([]);
+        await sync.saveRemoteUserDataNow("canvas");
+        expect(fixture.writes).toHaveLength(2);
+        expect(live().nodes).toEqual(originalRemote.nodes);
     });
 
     test("v1.6.8.5 journal 把新 taskId 写进 before 时，409 后按原快照修复基线并提交", async () => {
@@ -683,9 +852,11 @@ describe("定向保存与旧 journal 的真实同步集成", () => {
     });
 
     test.each([
-        { status: 409, reason: "canvas_mutation_id_reused" },
+        { status: 409, reason: "canvas_concurrent_write" },
         { status: 500, reason: "canvas_field_conflict" },
-    ])("非明确 canvas_field_conflict 409 不升级请求：%j", async (options) => {
+        { status: 401, reason: "unauthorized" },
+        { status: 403, reason: "forbidden" },
+    ])("未知结果、瞬时并发和鉴权拒绝保留原请求：%j", async (options) => {
         const entry = oldTaskEntry();
         await restoreJournal([entry]);
         fixture.errors.set("canvas:1", new ApiError("other rejection", options));
@@ -706,11 +877,11 @@ describe("定向保存与旧 journal 的真实同步集成", () => {
             ],
         });
         fixture.errors.set("canvas:1", new ApiError("A conflict", { status: 409, reason: "canvas_field_conflict" }));
-        await expect(sync.saveRemoteUserDataNow()).rejects.toThrow("A conflict");
+        await sync.saveRemoteUserDataNow();
         expect(fixture.writesById.get(b.id)).toHaveLength(1);
-        expect(useSyncProgressStore.getState().syncingProjects.canvas.phase).toBe("error");
+        expect(useSyncProgressStore.getState().syncingProjects.canvas.phase).toBe("done");
         expect(useSyncProgressStore.getState().syncingProjects[b.id]).toMatchObject({ phase: "done", pendingChanges: 0 });
-        expect(journal().map((entry: { projectId: string }) => entry.projectId)).toEqual(["canvas"]);
+        expect(journal()).toEqual([]);
     });
 
     test("本地 flush 失败保留已提交 journal，reload receipt 重放不重复 apply", async () => {
@@ -807,7 +978,7 @@ describe("画布云端同步状态收尾", () => {
         useCanvasStore.setState({ projects: [withCdnUrl()] });
         fixture.flushError = new Error("local persistence failed");
         await expect(sync.saveRemoteUserDataNow("canvas")).rejects.toThrow("local persistence failed");
-        expect(useSyncProgressStore.getState().syncingProjects.canvas).toMatchObject({ phase: "error", pendingChanges: 1, errorKind: "local" });
+        expect(useSyncProgressStore.getState().syncingProjects.canvas).toMatchObject({ phase: "pending", pendingChanges: 1, errorKind: "local" });
         expect(useSyncProgressStore.getState().isAnySyncing()).toBe(true);
     });
 
