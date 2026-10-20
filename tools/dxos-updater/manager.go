@@ -377,13 +377,17 @@ func (m *dxosManager) runUpdate(fromVersion, targetVersion string) {
 
 	m.setPhase(hostupdate.PhaseSwitching, "通过 DXOS 导入接口安装")
 	if err := m.installPackage(ctx, zipPath); err != nil {
-		m.rollbackTo(fromVersion, backup, fmt.Errorf("导入安装包失败：%w", err))
+		// 导入失败 = 应用根本没被替换，当前安装还是原版本。
+		// 此时绝不能调 DXOS 回退：那会退到更早的历史版本（可能是别的包），
+		// 还会白白覆盖一遍数据目录。只如实报错，让用户重试。
+		m.fail(hostupdate.PhaseFailed, fmt.Errorf("导入安装包失败，当前版本未改动：%w", err))
 		return
 	}
 
 	m.setPhase(hostupdate.PhaseVerifying, "验证 DXOS 已加载新版本")
 	installed, err := m.waitInstalled(ctx, commit)
 	if err != nil {
+		// 包已经换掉了但新后端没起来，这才需要恢复数据并回退应用。
 		m.rollbackTo(fromVersion, backup, fmt.Errorf("新版本未生效：%w", err))
 		return
 	}
@@ -413,7 +417,7 @@ func (m *dxosManager) runRollback(targetVersion string, backup hostupdate.Backup
 		m.manual(fmt.Errorf("恢复数据目录失败：%w", err))
 		return
 	}
-	if err := m.rollbackDXOSApp(ctx); err != nil {
+	if err := m.rollbackDXOSApp(ctx, targetVersion); err != nil {
 		m.manual(err)
 		return
 	}
@@ -449,7 +453,7 @@ func (m *dxosManager) rollbackTo(fromVersion string, backup hostupdate.Backup, c
 		m.manual(err)
 		return
 	}
-	if err := m.rollbackDXOSApp(ctx); err != nil {
+	if err := m.rollbackDXOSApp(ctx, fromVersion); err != nil {
 		m.manual(err)
 		return
 	}

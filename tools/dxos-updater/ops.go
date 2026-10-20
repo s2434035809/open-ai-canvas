@@ -304,26 +304,53 @@ func (m *dxosManager) installPackageOnce(ctx context.Context, zipPath string) er
 		return err
 	}
 	defer file.Close()
-	var buffer bytes.Buffer
-	writer := multipart.NewWriter(&buffer)
-	part, err := writer.CreateFormFile("package", filepath.Base(zipPath))
+	info, err := file.Stat()
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(part, file); err != nil {
-		return err
-	}
-	if err := writer.Close(); err != nil {
-		return err
-	}
-	data, err := m.dxosRequest(ctx, http.MethodPost, "/api/market/developer-apps/import", &buffer, writer.FormDataContentType())
+
+	// 必须流式上传：122 MB 的包整块读进内存再组 multipart，会被截断成
+	// "Unexpected end of form"。io.Pipe 边写边发，长度未知时 net/http 走 chunked。
+	body, writer := io.Pipe()
+	multipartWriter := multipart.NewWriter(writer)
+	go func() {
+		_, copyErr := func() (int64, error) {
+			part, partErr := multipartWriter.CreateFormFile("package", filepath.Base(zipPath))
+			if partErr != nil {
+				return 0, partErr
+			}
+			return io.Copy(part, file)
+		}()
+		if copyErr == nil {
+			copyErr = multipartWriter.Close()
+		} else {
+			_ = multipartWriter.Close()
+		}
+		_ = writer.CloseWithError(copyErr)
+	}()
+
+	cookie, err := m.dxosLogin(ctx)
 	if err != nil {
+		_ = body.CloseWithError(err)
 		return err
 	}
-	var payload struct {
-		App dxosApp `json:"app"`
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, m.config.DXOSBaseURL+"/api/market/developer-apps/import", body)
+	if err != nil {
+		_ = body.CloseWithError(err)
+		return err
 	}
-	_ = json.Unmarshal(data, &payload)
+	request.Header.Set("Cookie", cookie)
+	request.Header.Set("Content-Type", multipartWriter.FormDataContentType())
+	// 包较大，放宽超时；小机器边压边传可能超过默认的 5 分钟。
+	response, err := (&http.Client{Timeout: 20 * time.Minute}).Do(request)
+	if err != nil {
+		return fmt.Errorf("上传安装包失败（%.1f MB）：%w", float64(info.Size())/(1<<20), err)
+	}
+	defer response.Body.Close()
+	data, _ := io.ReadAll(io.LimitReader(response.Body, 4<<20))
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return fmt.Errorf("DXOS 返回 HTTP %d：%s", response.StatusCode, strings.TrimSpace(tail(string(data), 800)))
+	}
 	return nil
 }
 
@@ -357,7 +384,7 @@ func (m *dxosManager) stopBackend(ctx context.Context) error {
 }
 
 // rollbackDXOSApp 让 DXOS 回退到上一个历史版本。
-func (m *dxosManager) rollbackDXOSApp(ctx context.Context) error {
+func (m *dxosManager) rollbackDXOSApp(ctx context.Context, expected string) error {
 	data, err := m.dxosRequest(ctx, http.MethodGet, "/api/market/developer-apps/"+appID+"/history", nil, "")
 	if err != nil {
 		return err
@@ -365,6 +392,8 @@ func (m *dxosManager) rollbackDXOSApp(ctx context.Context) error {
 	var payload struct {
 		History []struct {
 			HistoryID string `json:"historyId"`
+			Version   string `json:"version"`
+			Build     int64  `json:"build"`
 		} `json:"history"`
 	}
 	if err := json.Unmarshal(data, &payload); err != nil {
@@ -372,6 +401,13 @@ func (m *dxosManager) rollbackDXOSApp(ctx context.Context) error {
 	}
 	if len(payload.History) == 0 {
 		return errors.New("DXOS 没有可用历史版本")
+	}
+	// 只回退到「最近一次被替换下来的版本」；历史里若是更早的包，宁可报错也不乱退。
+	if target := strings.TrimSpace(expected); target != "" {
+		actual := fmt.Sprintf("%s+%d", payload.History[0].Version, payload.History[0].Build)
+		if actual != target {
+			return fmt.Errorf("DXOS 最新历史版本是 %s，不是待回退的 %s，已中止回退", actual, target)
+		}
 	}
 	body, _ := json.Marshal(map[string]string{"historyId": payload.History[0].HistoryID})
 	_, err = m.dxosRequest(ctx, http.MethodPost, "/api/market/developer-apps/"+appID+"/rollback", bytes.NewReader(body), "application/json")
