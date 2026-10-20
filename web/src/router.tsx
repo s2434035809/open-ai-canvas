@@ -36,6 +36,7 @@ const ResponseInterceptionSettingsPage = lazy(() => import("@/pages/admin/settin
 const ThirdPartySettingsPage = lazy(() => import("@/pages/admin/settings/libtv-settings-page"));
 const WorkbenchToolsPage = lazy(() => import("@/pages/admin/workbench-tools/workbench-tools-page"));
 const SystemUpdatePage = lazy(() => import("@/pages/admin/settings/system-update-page"));
+const GitUpdatePage = lazy(() => import("@/pages/admin/settings/git-update-page"));
 const SystemPerformancePage = lazy(() => import("@/pages/admin/settings/system-performance-page"));
 const StoryboardPromptsPage = lazy(() => import("@/pages/admin/storyboard-prompts/storyboard-prompts-page"));
 const UsersPage = lazy(() => import("@/pages/admin/users/users-page"));
@@ -267,6 +268,7 @@ export const router = createBrowserRouter([
                     { path: "settings/response-interception", element: <ResponseInterceptionSettingsPage /> },
                     { path: "settings/third-party", element: <ThirdPartySettingsPage /> },
                     { path: "settings/system-update", element: <SystemUpdatePage /> },
+                    { path: "settings/git-update", element: <GitUpdatePage /> },
                     { path: "settings/system-performance", element: <SystemPerformancePage /> },
                     { path: "settings/libtv", element: <Navigate to="/admin/settings/third-party" replace /> },
                 ],

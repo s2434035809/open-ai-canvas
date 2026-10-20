@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"yingce/backend/internal/database"
+	"yingce/backend/internal/gitupdate"
 	"yingce/backend/internal/handler"
 	"yingce/backend/internal/logging"
 	"yingce/backend/internal/repository"
@@ -78,6 +79,24 @@ func run(ctx context.Context) error {
 	svc := service.New(repo, dataDir)
 	if updaterToken := strings.TrimSpace(os.Getenv("CANVAS_UPDATER_TOKEN")); updaterToken != "" {
 		svc.ConfigureUpdateManager(updaterclient.New(env("CANVAS_UPDATER_SOCKET", "/run/open-ai-canvas-updater/updater.sock"), updaterToken))
+	}
+	// 源码更新只在开发部署开启：容器内需要挂载仓库与 git，并允许执行 go build。
+	// 生产部署不要设置这些变量。
+	gitUpdateEnabled, err := envBool("CANVAS_GIT_UPDATE_ENABLED", false)
+	if err != nil {
+		return err
+	}
+	if gitUpdateEnabled {
+		buildTimeout, err := envDuration("CANVAS_GIT_UPDATE_BUILD_TIMEOUT", 15*time.Minute)
+		if err != nil {
+			return err
+		}
+		svc.ConfigureGitUpdateManager(gitupdate.NewManager(gitupdate.Config{
+			RepoDir:      env("CANVAS_GIT_UPDATE_REPO", "/workspace"),
+			Branch:       env("CANVAS_GIT_UPDATE_BRANCH", "dev"),
+			UpstreamRef:  env("CANVAS_GIT_UPDATE_UPSTREAM_REF", "upstream/main"),
+			BuildTimeout: buildTimeout,
+		}))
 	}
 	defer svc.Close()
 	if err := svc.ValidateRuntime(); err != nil {

@@ -253,6 +253,7 @@ func RegisterAdminRoutes(r *gin.RouterGroup, svc *service.Service) {
 	registerAdminSettingRoutes(r, svc)
 	registerAdminAPILogRoutes(r, svc)
 	registerAdminLoginLogRoutes(r, svc)
+	registerAdminGitUpdateRoutes(r, svc)
 }
 
 func RegisterSystemProxyRoutes(r *gin.RouterGroup, svc *service.Service) {
