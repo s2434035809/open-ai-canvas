@@ -299,15 +299,41 @@ func (m *dxosManager) installPackage(ctx context.Context, zipPath string) error 
 }
 
 func (m *dxosManager) installPackageOnce(ctx context.Context, zipPath string) error {
+	info, err := os.Stat(zipPath)
+	if err != nil {
+		return err
+	}
+	// 会话可能在任何时刻过期（DXOS 重启、用户重登）。上传失败后必须能重来一次，
+	// 所以要重新打开文件、重建 pipe，而不是复用已经被读空的 body。
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		if attempt > 0 {
+			m.mu.Lock()
+			m.dxosCookie = ""
+			m.mu.Unlock()
+		}
+		err := m.uploadPackage(ctx, zipPath, info.Size())
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if !isDXOSAuthError(err) {
+			return err
+		}
+	}
+	return lastErr
+}
+
+func isDXOSAuthError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "HTTP 401")
+}
+
+func (m *dxosManager) uploadPackage(ctx context.Context, zipPath string, size int64) error {
 	file, err := os.Open(zipPath)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
-	info, err := file.Stat()
-	if err != nil {
-		return err
-	}
 
 	// 必须流式上传：122 MB 的包整块读进内存再组 multipart，会被截断成
 	// "Unexpected end of form"。io.Pipe 边写边发，长度未知时 net/http 走 chunked。
@@ -344,7 +370,7 @@ func (m *dxosManager) installPackageOnce(ctx context.Context, zipPath string) er
 	// 包较大，放宽超时；小机器边压边传可能超过默认的 5 分钟。
 	response, err := (&http.Client{Timeout: 20 * time.Minute}).Do(request)
 	if err != nil {
-		return fmt.Errorf("上传安装包失败（%.1f MB）：%w", float64(info.Size())/(1<<20), err)
+		return fmt.Errorf("上传安装包失败（%.1f MB）：%w", float64(size)/(1<<20), err)
 	}
 	defer response.Body.Close()
 	data, _ := io.ReadAll(io.LimitReader(response.Body, 4<<20))
