@@ -13,10 +13,10 @@ import (
 func TestCloudAgentImageApprovalTreatsAutomaticQualityAsUnspecified(t *testing.T) {
 	for _, quality := range []string{"auto", "any", "AUTO"} {
 		resolved := map[string]any{"mode": "image", "config": map[string]any{"size": "16:9", "quality": "auto"}, "capabilityOptions": map[string]any{"size": "16:9"}}
-		if err := validateCloudAgentResolvedMediaOptions(map[string]any{"quality": quality, "imageResolution": "any"}, resolved); err != nil {
+		if err := validateCloudAgentResolvedMediaOptions(map[string]any{"quality": quality, "imageResolution": "any"}, resolved, nil); err != nil {
 			t.Fatalf("automatic options caused false admission failure: %v", err)
 		}
-		if err := validateCloudAgentResolvedMediaOptions(map[string]any{"quality": "high"}, resolved); err == nil {
+		if err := validateCloudAgentResolvedMediaOptions(map[string]any{"quality": "high"}, resolved, nil); err == nil {
 			t.Fatal("explicit unsupported user quality was accepted")
 		}
 	}

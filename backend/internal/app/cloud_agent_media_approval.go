@@ -87,7 +87,7 @@ func (s *Service) updateCloudAgentMediaApproval(repo *repository.Repository, run
 	// 共用同一套规格。旧实现在这里直接判「解析后的规格与审批参数不同」并拒绝，用户只要在
 	// 审批卡里改过参数，每次点「同意执行」都会被驳回，审批卡片也就一直关不掉。
 	logCloudAgentResolvedMediaNormalization(run.ID, req.Input["config"], task.InputJSON)
-	if err := applyCloudAgentResolvedMediaDefaults(&req, plan, task); err != nil {
+	if err := s.applyCloudAgentResolvedMediaDefaults(&req, plan, task); err != nil {
 		return err
 	}
 	if err := validateCloudAgentMediaBudget(plan.Args, state); err != nil {
@@ -173,7 +173,32 @@ func logCloudAgentResolvedMediaNormalization(runID string, requested any, taskIn
 	}
 }
 
-func validateCloudAgentResolvedMediaOptions(requested, resolvedInput map[string]any) error {
+// cloudAgentImageSizeAliasSpec 取回审批所指向模型的图片尺寸契约，用于识别
+// “同一预设的像素值 / 比例值”这两种等价写法。任务准入会把公开比例意图编码成
+// 线路需要的像素值（或反向），审批校验不能把它们当成用户改了规格。
+func (s *Service) cloudAgentImageSizeAliasSpec(args cloudAgentMediaArgs) *CapabilitySpec {
+	if args.Mode != "image" {
+		return nil
+	}
+	if args.ChannelID == "" || args.ChannelModelKey == "" {
+		return nil
+	}
+	channelModel, err := s.repo.ChannelModelByKey(args.ChannelID, args.ChannelModelKey)
+	if err != nil {
+		return nil
+	}
+	config, err := normalizedChannelModelCapability(channelModel, s.protocolRegistry())
+	if err != nil || config == nil || config.Image == nil {
+		return nil
+	}
+	spec, err := CapabilitySpecFromModelCapabilityConfig(config, channelModel.Capability)
+	if err != nil {
+		return nil
+	}
+	return &spec
+}
+
+func validateCloudAgentResolvedMediaOptions(requested, resolvedInput map[string]any, sizeSpec *CapabilitySpec) error {
 	resolvedOptions, _ := resolvedInput["capabilityOptions"].(map[string]any)
 	resolvedConfig, _ := resolvedInput["config"].(map[string]any)
 	if raw := requested["imageParameters"]; raw != nil {
@@ -193,6 +218,10 @@ func validateCloudAgentResolvedMediaOptions(requested, resolvedInput map[string]
 	}
 	for _, key := range []string{"size", "imageResolution", "videoSeconds", "vquality", "quality", "count", "videoGenerateAudio", "videoWatermark", "videoArkPrivateAssetUpload"} {
 		requestedValue := stringValue(requested[key])
+		resolvedValue := stringValue(resolvedOptions[key])
+		if resolvedValue == "" {
+			resolvedValue = stringValue(resolvedConfig[key])
+		}
 		if stringValue(resolvedInput["mode"]) == "image" && (key == "quality" || key == "imageResolution") && inactiveCapabilityOptionValue(key, requestedValue) {
 			continue
 		}
@@ -200,18 +229,36 @@ func validateCloudAgentResolvedMediaOptions(requested, resolvedInput map[string]
 		if key == "size" && stringValue(resolvedInput["mode"]) == "image" && requestedValue != "" && strings.EqualFold(requestedValue, stringValue(resolvedConfig[key])) {
 			continue
 		}
+		// 上面的直接比较只覆盖 config 原样保留的情况。任务准入还会把比例意图编码成
+		// 预设像素（例如 16:9 → 2752x1536）并写回 capabilityOptions，此时两个字符串
+		// 必然不同，但仍是同一条已声明预设，不应判成审批内容被篡改。
+		if key == "size" && sizeSpec != nil && sizeSpec.ImageSize != nil && requestedValue != "" && resolvedValue != "" {
+			requestedOptions := map[string]any{"imageResolution": stringValue(resolvedOptions["imageResolution"])}
+			if capabilityImageSizePresetMatches(*sizeSpec, requestedValue, requestedOptions) &&
+				capabilityImageSizePresetMatches(*sizeSpec, resolvedValue, requestedOptions) &&
+				imageSizePresetsEquivalent(sizeSpec.ImageSize.Presets, requestedValue, resolvedValue) {
+				continue
+			}
+		}
 		if key == "quality" && requestedValue != "" {
 			if _, declared := resolvedOptions[key]; !declared && !strings.EqualFold(requestedValue, stringValue(resolvedOptions["imageResolution"])) {
 				return creationConflict("所选图片模型未声明质量参数，请使用模型声明的图片分辨率或质量选项")
 			}
 		}
-		resolved := stringValue(resolvedOptions[key])
-		if resolved == "" {
-			resolved = stringValue(resolvedConfig[key])
-		}
-		if requestedValue != "" && !strings.EqualFold(requestedValue, resolved) {
+		if requestedValue != "" && !strings.EqualFold(requestedValue, resolvedValue) {
 			return creationConflict("模型解析后的生成规格与审批参数不同，请重新读取目录并审批")
 		}
 	}
 	return nil
+}
+
+// imageSizePresetsEquivalent 判断两种图片尺寸写法是否指向同一条已声明预设。
+func imageSizePresetsEquivalent(presets []ImageSizePreset, left, right string) bool {
+	leftPreset, leftOK := declaredImageSizePreset(presets, left, "", "")
+	rightPreset, rightOK := declaredImageSizePreset(presets, right, "", "")
+	if !leftOK || !rightOK {
+		return strings.EqualFold(strings.TrimSpace(left), strings.TrimSpace(right))
+	}
+	return strings.EqualFold(strings.TrimSpace(leftPreset.Ratio), strings.TrimSpace(rightPreset.Ratio)) &&
+		strings.EqualFold(strings.TrimSpace(leftPreset.Size), strings.TrimSpace(rightPreset.Size))
 }

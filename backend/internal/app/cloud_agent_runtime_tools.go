@@ -485,7 +485,7 @@ func (s *Service) advanceCloudAgentTool(run *model.CloudAgentExecution, state *c
 				// eventual task and the canvas draft must use this exact resolved input;
 				// otherwise auto mode reports a false tool failure for omitted size or
 				// duration and makes the model spend another turn repairing its own call.
-				if err := applyCloudAgentResolvedMediaDefaults(&req, prepared, preparedTask); err != nil {
+				if err := s.applyCloudAgentResolvedMediaDefaults(&req, prepared, preparedTask); err != nil {
 					return s.cloudAgentMediaError(run, state, "admission", false, false, err)
 				}
 				if err := validateCloudAgentMediaBudget(prepared.Args, state); err != nil {

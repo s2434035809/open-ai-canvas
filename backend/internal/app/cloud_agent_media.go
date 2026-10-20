@@ -850,7 +850,7 @@ func (s *Service) prepareCloudAgentMedia(run *model.CloudAgentExecution, state *
 // regular task admission already owns default resolution; this helper only
 // mirrors that resolved contract back to the Agent state so auto execution does
 // not need to fail once for size/duration and then ask the model to repair it.
-func applyCloudAgentResolvedMediaDefaults(req *CreateTaskRequest, plan *cloudAgentMediaPlan, task *model.Task) error {
+func (s *Service) applyCloudAgentResolvedMediaDefaults(req *CreateTaskRequest, plan *cloudAgentMediaPlan, task *model.Task) error {
 	if req == nil || plan == nil || task == nil {
 		return BadAuthRequest("媒体生成准入结果无效，未提交生成任务")
 	}
@@ -868,7 +868,7 @@ func applyCloudAgentResolvedMediaDefaults(req *CreateTaskRequest, plan *cloudAge
 	if plan.Args.VideoArkPrivateAssetUpload != nil {
 		requested["videoArkPrivateAssetUpload"] = strconv.FormatBool(*plan.Args.VideoArkPrivateAssetUpload)
 	}
-	if err := validateCloudAgentResolvedMediaOptions(requested, input); err != nil {
+	if err := validateCloudAgentResolvedMediaOptions(requested, input, s.cloudAgentImageSizeAliasSpec(plan.Args)); err != nil {
 		return err
 	}
 
