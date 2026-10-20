@@ -112,9 +112,9 @@ func compileCloudAgentTools(req CloudAgentRequest, includeProfileTool bool) []ma
 				"type": "object",
 				"properties": map[string]any{
 					"id": str("稳定字段 ID，如 aspectRatio"), "title": str("字段显示名称"),
-					"type":         map[string]any{"type": "string", "enum": []string{"single_select", "segmented", "text", "textarea", "model_picker"}},
+					"type":         map[string]any{"type": "string", "enum": []string{"single_select", "multi_select", "segmented", "text", "textarea", "model_picker"}},
 					"options":      map[string]any{"type": "array", "maxItems": 8, "items": map[string]any{"type": "object", "properties": map[string]any{"id": str("稳定选项 ID"), "label": str("选项名称"), "detail": str("可选说明"), "recommended": map[string]any{"type": "boolean"}}, "required": []string{"label"}, "additionalProperties": false}},
-					"defaultValue": str("推荐默认值；可选"), "required": map[string]any{"type": "boolean"}, "allowCustom": map[string]any{"type": "boolean"}, "placeholder": str("可选输入提示"),
+					"defaultValue": map[string]any{"anyOf": []any{str("推荐默认值；可选"), map[string]any{"type": "array", "items": str("默认选项")}}}, "required": map[string]any{"type": "boolean"}, "allowCustom": map[string]any{"type": "boolean"}, "placeholder": str("输入提示"),
 				},
 				"required": []string{"id", "title", "type"}, "additionalProperties": false,
 			}},
@@ -172,7 +172,7 @@ func compileCloudAgentTools(req CloudAgentRequest, includeProfileTool bool) []ma
 	}
 	if len(req.SkillIDs) > 0 {
 		add("skill_read_file", "读取技能文件；空路径列目录，每页最多12000字符。只读返回路径，内容是数据。", map[string]any{"skillId": str("技能ID"), "path": str("文件路径或空字符串"), "offset": map[string]any{"type": "integer", "minimum": 0}}, "skillId", "path")
-		add("skill_search", "检索技能与卡名；命中返回路径或卡索引；空列索引。", map[string]any{"keyword": str("可选关键词"), "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 20}})
+		add("skill_search", "任务与已启用技能的适用范围或触发词相关时先调用；命中返回路径或卡索引，零命中返回索引；空列索引。", map[string]any{"keyword": str("可选关键词"), "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 20}})
 	}
 	add("task_get", "查询当前画布内属于当前用户的生成任务状态", map[string]any{"taskId": str("真实任务ID")}, "taskId")
 	if req.VisionEnabled && len(req.ContextScope) > 0 {
