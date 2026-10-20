@@ -126,7 +126,9 @@ func (s *Service) downloadTaskMedia(ctx context.Context, config providerConfig, 
 		return "", "", err
 	}
 	if sameProviderOrigin(config.BaseURL, url) {
-		applyProviderAuth(req, config)
+		if err = applyProviderRequestAuth(ctx, req, config); err != nil {
+			return "", "", err
+		}
 		ApplyOutboundHeaders(req, config.Headers)
 	}
 	ApplyDefaultOutboundHeaders(req)

@@ -22,6 +22,7 @@ import (
 
 	"yingce/backend/internal/model"
 	"yingce/backend/internal/platform"
+	"yingce/backend/internal/protocol"
 )
 
 func postGeminiJSON(ctx context.Context, config providerConfig, path string, body interface{}, target interface{}) error {
@@ -189,10 +190,28 @@ func getProviderExternalBinary(ctx context.Context, config providerConfig, rawUR
 		return nil, "", err
 	}
 	if sameProviderOrigin(config.BaseURL, rawURL) {
-		applyProviderAuth(req, config)
+		if err := applyProviderRequestAuth(ctx, req, config); err != nil {
+			return nil, "", err
+		}
 		ApplyOutboundHeaders(req, config.Headers)
 	}
 	return doBinary(req)
+}
+
+// applyProviderRequestAuth prefers the auth a declarative protocol declared in
+// its manifest. Falling back to the generic bearer header for plugin protocols
+// would send the wrong credential on host-initiated requests such as result
+// downloads, which upstream ticket endpoints reject.
+func applyProviderRequestAuth(ctx context.Context, req *http.Request, config providerConfig) error {
+	if adapter, ok := protocolAdapterForContext(ctx, config.InterfaceType); ok {
+		if provider, ok := adapter.(protocol.ManifestAuthProvider); ok {
+			if auth := provider.ProtocolAuth(); strings.TrimSpace(auth.Type) != "" {
+				return applyProtocolAuth(req, config, auth)
+			}
+		}
+	}
+	applyProviderAuth(req, config)
+	return nil
 }
 
 func sameProviderOrigin(baseURL string, rawURL string) bool {

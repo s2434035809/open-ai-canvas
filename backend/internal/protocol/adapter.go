@@ -43,6 +43,14 @@ type ResultCapability interface {
 	ResultAvailable() bool
 }
 
+// ManifestAuthProvider exposes the auth a declarative protocol declared in its
+// manifest. The host applies the same auth to host-initiated requests such as
+// result media downloads, so those requests cannot drift away from
+// create/poll and silently fall back to a generic bearer header.
+type ManifestAuthProvider interface {
+	ProtocolAuth() ManifestAuth
+}
+
 type AgentRequestContext struct {
 	BaseURL string
 	Model   string
