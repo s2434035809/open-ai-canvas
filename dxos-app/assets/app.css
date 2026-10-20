@@ -1,0 +1,26 @@
+:root, :root[data-theme="light"] { --bg:#f4f6f5; --surface:#fff; --text:#202b28; --muted:#64716d; --line:#d9e1dd; --accent:#216e5a; --accent-text:#fff; --error:#ad413c; }
+:root[data-theme="dark"] { --bg:#151b1a; --surface:#202927; --text:#f0f5f2; --muted:#a5b3ad; --line:#3a4842; --accent:#76c7aa; --accent-text:#11251d; --error:#f3a29d; }
+* { box-sizing:border-box; }
+html, body { width:100%; min-height:100%; margin:0; }
+body { background:var(--bg); color:var(--text); font:14px/1.5 system-ui,-apple-system,sans-serif; }
+button { font:inherit; }
+.shell { display:flex; flex-direction:column; width:100%; min-height:100vh; padding:clamp(20px,4vw,36px); }
+.topbar { display:flex; align-items:center; gap:12px; }
+.topbar strong,.topbar small { display:block; }
+.topbar strong { font-size:18px; }
+.topbar small { color:var(--muted); font-size:12px; }
+.mark { display:grid; place-items:center; width:42px; height:42px; flex:none; border-radius:8px; background:var(--accent); color:var(--accent-text); font-size:21px; font-weight:700; }
+.workspace { width:min(100%,580px); margin:auto; padding:28px 0 32px; }
+.meta { display:flex; justify-content:space-between; gap:16px; color:var(--accent); font-size:12px; font-weight:700; }
+.workspace h1 { margin:10px 0 6px; font-size:clamp(26px,4vw,34px); line-height:1.2; }
+.workspace p { color:var(--muted); }
+.destination { display:flex; align-items:center; gap:14px; flex-wrap:wrap; min-height:52px; margin:26px 0 18px; padding:12px 15px; border:1px solid var(--line); border-radius:6px; background:var(--surface); }
+.destination span { color:var(--muted); font-size:12px; }
+.destination code { overflow-wrap:anywhere; color:var(--text); font-size:13px; }
+#open-button { min-width:150px; min-height:42px; padding:9px 18px; border:0; border-radius:6px; background:var(--accent); color:var(--accent-text); cursor:pointer; font-weight:650; }
+#open-button:hover { filter:brightness(1.08); }
+#open-button:focus-visible { outline:3px solid var(--accent); outline-offset:3px; }
+#open-button:disabled { cursor:wait; opacity:.7; }
+.feedback { min-height:21px; margin:12px 0 0; color:var(--error)!important; font-size:12px; }
+footer { display:flex; justify-content:space-between; gap:12px; border-top:1px solid var(--line); padding-top:14px; color:var(--muted); font-size:11px; }
+@media (max-width:500px) { .shell { padding:20px; } footer { flex-direction:column; gap:4px; } }

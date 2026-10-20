@@ -1,0 +1,47 @@
+{
+  "format": "dx-app/v2",
+  "id": "yingce-main",
+  "version": "1.6.0",
+  "build": 1,
+  "releaseChannel": "dev",
+  "minSystemVersion": "0.3.9",
+  "dataVersion": 1,
+  "name": "影策",
+  "subtitle": "AI 影视与短剧创作工作台",
+  "description": "在 DX OS 隔离窗口内运行影策前端，通过内置 MCP 连接本机后端。",
+  "category": "software",
+  "entry": "index.html",
+  "defaultSize": {
+    "width": 1440,
+    "height": 900
+  },
+  "backgroundMode": "keep-alive",
+  "icon": {
+    "gradient": "linear-gradient(145deg, #216e5a, #365d72)",
+    "svg": "<svg viewBox='0 0 64 64'><rect x='14' y='10' width='36' height='44' rx='5' fill='white'/><path d='M22 24h20M22 32h13M22 40h20' stroke='#216e5a' stroke-width='3' stroke-linecap='round'/><path d='M43 28l8 5-8 5z' fill='#365d72'/></svg>"
+  },
+  "permissions": [
+    "app.yingce-main.open",
+    "app.yingce-main.yingce.request",
+    "app.yingce-main.project.read",
+    "app.yingce-main.project.write",
+    "app.yingce-main.project.delete",
+    "app.yingce-main.file.write",
+    "app.yingce-main.ui.notify"
+  ],
+  "dependencies": [
+    {
+      "type": "mcp",
+      "id": "yingce-local",
+      "name": "影策本地后端连接器",
+      "required": true,
+      "source": "bundled",
+      "path": "mcp/mcp.json",
+      "installHint": "MCP 已封装在影策 APP 内，无需另行安装。"
+    }
+  ],
+  "agent": {
+    "summary": "为影策前端提供本机后端请求能力。",
+    "toolManifest": "agent.tools.json"
+  }
+}

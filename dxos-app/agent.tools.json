@@ -1,0 +1,15 @@
+{
+  "format": "dx-agent-tools/v1",
+  "appId": "yingce-main",
+  "tools": [{
+    "name": "yingce-local-request",
+    "title": "调用影策本地接口",
+    "description": "在已登录的影策本地后端上执行一个受限的 /api 请求。",
+    "whenToUse": ["影策页面需要读取或保存本地创作数据时"],
+    "permission": "app.yingce-main.yingce.request",
+    "risk": "write",
+    "sideEffects": ["call:mcp"],
+    "handler": { "type": "mcp-tool", "serverId": "yingce-local", "toolName": "request" },
+    "inputSchema": { "type": "object", "properties": { "method": { "type": "string" }, "path": { "type": "string" }, "headers": { "type": "object" }, "body": {} }, "required": ["path"] }
+  }]
+}

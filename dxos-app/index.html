@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>影策</title>
+  <link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar"><span class="mark" aria-hidden="true">影</span><span><strong data-i18n="title">影策</strong><small data-i18n="subtitle">影视创作工作台</small></span></header>
+    <section class="workspace">
+      <div class="meta"><span data-i18n="workspace">工作台</span><span id="version"></span></div>
+      <h1 data-i18n="headline">继续创作</h1>
+      <p data-i18n="description">在浏览器中打开本机运行的影策工作台。</p>
+      <div class="destination"><span data-i18n="address">本地地址</span><code id="address"></code></div>
+      <button type="button" id="open-button" data-i18n="open">打开影策</button>
+      <p class="feedback" id="feedback" role="status" aria-live="polite"></p>
+    </section>
+    <footer><span data-i18n="footer">由本机影策服务提供内容</span><span><span data-i18n="source">源码</span> <span id="commit"></span></span></footer>
+  </main>
+  <script src="assets/config.js"></script>
+  <script src="assets/app.js"></script>
+</body>
+</html>

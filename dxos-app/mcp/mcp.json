@@ -1,0 +1,13 @@
+{
+  "format": "dx-mcp/v1",
+  "mcpServers": {
+    "yingce-local": {
+      "name": "影策本地后端连接器",
+      "command": "node",
+      "args": ["server.js"],
+      "cwd": "mcp",
+      "autoStart": true,
+      "env": { "YINGCE_BACKEND_URL": "http://127.0.0.1:3003" }
+    }
+  }
+}
