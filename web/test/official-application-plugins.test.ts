@@ -30,7 +30,7 @@ describe("official application plugin classification", () => {
     test("exposes a single de-duplicated id list", () => {
         const ids = [...OFFICIAL_APPLICATION_PLUGIN_IDS];
         expect(new Set(ids).size).toBe(ids.length);
-        expect(ids.length).toBe(6);
+        expect(ids.length).toBe(7);
     });
 
     test("both plugin pages consume the shared list instead of a local copy", () => {

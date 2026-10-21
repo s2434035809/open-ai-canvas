@@ -1,0 +1,31 @@
+/**
+ * 设计工作台页面局部样式。
+ *
+ * .ds-shell 只作用于设计工作台子树，不外泄到全局主题；与 pages/portfolio/portfolio.css
+ * 同一套做法（页面自己 import，根类作用域）。P0 骨架阶段只有空态，编辑器样式后续追加至此。
+ */
+
+.ds-shell .ds-empty {
+    display: flex;
+    min-height: 320px;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    border: 1px dashed var(--border, rgba(0, 0, 0, 0.12));
+    border-radius: 12px;
+    padding: 32px 24px;
+    text-align: center;
+}
+
+.ds-shell .ds-empty-title {
+    font-size: 15px;
+    font-weight: 600;
+}
+
+.ds-shell .ds-empty-note {
+    max-width: 52ch;
+    font-size: 13px;
+    line-height: 1.7;
+    color: var(--muted-foreground, rgba(0, 0, 0, 0.55));
+}

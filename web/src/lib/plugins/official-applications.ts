@@ -4,6 +4,7 @@ import { PROMPT_OPTIMIZER_PLUGIN_ID } from "@/lib/plugins/builtin/prompt-optimiz
 import { RUNNINGHUB_PLUGIN_ID } from "@/lib/plugins/builtin/workflows";
 
 import { EDITOR_SHELL_PLUGIN_ID } from "./builtin/editor/editor-shell";
+import { DESIGN_STUDIO_PLUGIN_ID } from "./builtin/design/design-studio";
 import { PORTFOLIO_STUDIO_PLUGIN_ID } from "./builtin/portfolio/portfolio-studio";
 
 /**
@@ -19,6 +20,7 @@ export const OFFICIAL_APPLICATION_PLUGIN_IDS = [
     ART_CRITIQUE_PLUGIN_ID,
     EDITOR_SHELL_PLUGIN_ID,
     PORTFOLIO_STUDIO_PLUGIN_ID,
+    DESIGN_STUDIO_PLUGIN_ID,
 ] as const;
 
 const officialApplicationIdSet = new Set<string>(OFFICIAL_APPLICATION_PLUGIN_IDS);

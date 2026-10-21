@@ -5,3 +5,4 @@ import "./ai-art-critique";
 import "./media-conversion";
 import "./editor/editor-shell";
 import "./portfolio/portfolio-studio";
+import "./design/design-studio";

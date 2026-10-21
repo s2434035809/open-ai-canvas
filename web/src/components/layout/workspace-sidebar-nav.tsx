@@ -1,5 +1,5 @@
 import { Popover } from "antd";
-import { BookImage, ChevronDown, ChevronRight, CircleUserRound, History as HistoryIcon, Image as ImageIcon, Infinity as InfinityIcon, PanelLeftClose, PanelLeftOpen, Plus, Video } from "lucide-react";
+import { BookImage, ChevronDown, ChevronRight, CircleUserRound, History as HistoryIcon, Image as ImageIcon, Infinity as InfinityIcon, Palette, PanelLeftClose, PanelLeftOpen, Plus, Video } from "lucide-react";
 import { LayoutGroup, motion, useReducedMotion } from "motion/react";
 import { useEffect, useMemo, useRef, useState, type ComponentType, type CSSProperties } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router";
@@ -10,6 +10,7 @@ import { Kbd } from "@/components/ui/base/kbd";
 import { navigationTools, type NavigationToolSlug } from "@/constant/navigation-tools";
 import { useWorkspaceLogout } from "@/hooks/use-workspace-logout";
 import { aceternityMotion } from "@/lib/aceternity-motion";
+import { DESIGN_STUDIO_PLUGIN_ID } from "@/lib/plugins/builtin/design/design-studio";
 import { PORTFOLIO_STUDIO_PLUGIN_ID } from "@/lib/plugins/builtin/portfolio/portfolio-studio";
 import { cn } from "@/lib/utils";
 import { preloadWorkspaceRoute } from "@/lib/workspace-route-modules";
@@ -42,7 +43,7 @@ function toolItem(slug: NavigationToolSlug, to: string): WorkspaceNavItem {
     return { id: slug, title: tool?.label ?? slug, icon: tool?.icon, to };
 }
 
-function buildNav(features: FeatureAvailability, isAdmin: boolean, portfolioEnabled: boolean): { groups: WorkspaceNavGroup[]; footer: WorkspaceNavItem[] } {
+function buildNav(features: FeatureAvailability, isAdmin: boolean, portfolioEnabled: boolean, designEnabled: boolean): { groups: WorkspaceNavGroup[]; footer: WorkspaceNavItem[] } {
     const groups: WorkspaceNavGroup[] = [
         {
             items: [
@@ -60,6 +61,7 @@ function buildNav(features: FeatureAvailability, isAdmin: boolean, portfolioEnab
                 // 作品集是宿主内置的全屏工作台：启用后在侧栏常驻入口，
                 // 否则只能从插件中心卡片绕进去，用户会以为功能不存在。
                 ...(portfolioEnabled ? [{ id: "portfolio", title: "作品集", icon: BookImage, to: "/plugins/portfolio" }] : []),
+                ...(designEnabled ? [{ id: "design", title: "设计", icon: Palette, to: "/plugins/design" }] : []),
                 ...(features.pluginCenterEnabled || isAdmin ? [{ ...toolItem("plugins", "/plugins"), title: "插件" }] : []),
             ],
         },
@@ -358,6 +360,7 @@ function NavGroup({ group, activeId, onNavigate, onOpenSearch, onLogout, collaps
 export function workspaceNavActiveId(pathname: string, section?: string | null) {
     const segments = pathname.split("/").filter(Boolean);
     if (pathname.startsWith("/plugins/portfolio")) return "portfolio";
+    if (pathname.startsWith("/plugins/design")) return "design";
     if (segments[0] === "toolbox" && segments[1]) return `toolbox-${segments[1]}`;
     const slug = segments[0] || "home";
     if (slug === "create") return "home";
@@ -375,8 +378,14 @@ export function WorkspaceSidebarNav({ collapsed, onNavigate, onOpenSearch, onExp
         if (serverState) return serverState.effectiveEnabled;
         return Boolean(state.installations.find((item) => item.manifest.id === PORTFOLIO_STUDIO_PLUGIN_ID)?.enabled);
     });
+    // 设计工作台同理：入口跟随插件启停。
+    const designEnabled = usePluginStore((state) => {
+        const serverState = state.pluginStates[DESIGN_STUDIO_PLUGIN_ID];
+        if (serverState) return serverState.effectiveEnabled;
+        return Boolean(state.installations.find((item) => item.manifest.id === DESIGN_STUDIO_PLUGIN_ID)?.enabled);
+    });
     const { handleLogout } = useWorkspaceLogout();
-    const { groups, footer } = useMemo(() => buildNav(features, user?.role === "admin", portfolioEnabled), [features, user?.role, portfolioEnabled]);
+    const { groups, footer } = useMemo(() => buildNav(features, user?.role === "admin", portfolioEnabled, designEnabled), [features, user?.role, portfolioEnabled, designEnabled]);
 
     const activeId = workspaceNavActiveId(pathname, searchParams.get("section"));
 

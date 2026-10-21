@@ -12,6 +12,7 @@ import "@/lib/plugins/builtin";
 import { EAGLE_PLUGIN_ID } from "@/lib/plugins/builtin/eagle";
 import { PROMPT_OPTIMIZER_PLUGIN_ID } from "@/lib/plugins/builtin/prompt-optimizer";
 import { PORTFOLIO_STUDIO_PLUGIN_ID } from "@/lib/plugins/builtin/portfolio/portfolio-studio";
+import { DESIGN_STUDIO_PLUGIN_ID } from "@/lib/plugins/builtin/design/design-studio";
 import { RUNNINGHUB_PLUGIN_ID } from "@/lib/plugins/builtin/workflows";
 import { isOfficialApplicationPluginId } from "@/lib/plugins/official-applications";
 import type { PluginManifest, PluginManifestV2, RegisteredPlugin } from "@/lib/plugins/plugin-types";
@@ -33,6 +34,7 @@ import { Select } from "@/components/ui/base/select";
  */
 const applicationOpenRoutes: Record<string, string> = {
     [PORTFOLIO_STUDIO_PLUGIN_ID]: "/plugins/portfolio",
+    [DESIGN_STUDIO_PLUGIN_ID]: "/plugins/design",
 };
 
 const categoryLabels: Record<string, string> = {
