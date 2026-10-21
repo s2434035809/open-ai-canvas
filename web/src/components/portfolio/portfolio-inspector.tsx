@@ -8,7 +8,8 @@ import { ColorPicker, Divider, Input, InputNumber, Segmented, Select, Slider, Sw
 import { useMemo } from "react";
 
 import type { PortfolioImageFit, PortfolioTextAlign } from "@/lib/portfolio/contracts";
-import { currentPortfolioPage, usePortfolioStore } from "@/lib/portfolio/store";
+import { currentPortfolioPage } from "@/lib/portfolio/store";
+import { usePortfolioStore, usePortfolioStoreApi } from "@/lib/portfolio/store-context";
 
 const FIT_OPTIONS: Array<{ label: string; value: PortfolioImageFit }> = [
     { label: "裁剪填满", value: "cover" },
@@ -30,6 +31,7 @@ const FONT_OPTIONS = [
 ];
 
 export function PortfolioInspector() {
+    const store = usePortfolioStoreApi();
     const page = usePortfolioStore(currentPortfolioPage);
     const selectedIds = usePortfolioStore((state) => state.selectedIds);
     const updateElement = usePortfolioStore((state) => state.updateElement);
@@ -109,7 +111,7 @@ export function PortfolioInspector() {
                         <div className="text-[var(--fs-body)] font-medium">已选 {selected.length} 个元素</div>
                     </header>
                     <Field label="整体不透明度">
-                        <Slider min={0} max={100} value={Math.round((selected[0]?.opacity ?? 1) * 100)} onChange={(value) => usePortfolioStore.getState().updateSelected({ opacity: value / 100 })} />
+                        <Slider min={0} max={100} value={Math.round((selected[0]?.opacity ?? 1) * 100)} onChange={(value) => store.getState().updateSelected({ opacity: value / 100 })} />
                     </Field>
                     <p className="text-[var(--fs-micro)] leading-5 text-foreground/55">多选时可以整体拖动、对齐、层级调整与自动网格排版；要改具体尺寸请单选。</p>
                 </div>

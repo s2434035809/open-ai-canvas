@@ -13,7 +13,7 @@ import { EmptyState } from "@/components/ui/product/empty-state";
 import type { PortfolioElement, PortfolioPage } from "@/lib/portfolio/contracts";
 import { elementBounds } from "@/lib/portfolio/geometry";
 import { readLocalImage, uploadLocalImage } from "@/lib/portfolio/image-import";
-import { usePortfolioStore } from "@/lib/portfolio/store";
+import { usePortfolioStore } from "@/lib/portfolio/store-context";
 import { resolveImageUrl } from "@/services/image-storage";
 import { useAssetStore, type ImageAsset } from "@/stores/use-asset-store";
 

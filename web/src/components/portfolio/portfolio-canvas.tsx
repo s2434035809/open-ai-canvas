@@ -29,7 +29,8 @@ import {
     type ResizeHandle,
     type ViewTransform,
 } from "@/lib/portfolio/geometry";
-import { currentPortfolioPage, usePortfolioStore } from "@/lib/portfolio/store";
+import { currentPortfolioPage } from "@/lib/portfolio/store";
+import { usePortfolioStore, usePortfolioStoreApi } from "@/lib/portfolio/store-context";
 import { snapRect } from "@/lib/portfolio/document";
 
 /** 吸附阈值按屏幕像素给，缩放后手感一致。 */
@@ -114,6 +115,8 @@ export function PortfolioCanvas({ onEditText, onReady }: PortfolioCanvasProps) {
     const [spacePressed, setSpacePressed] = useState(false);
     const [marquee, setMarquee] = useState<PortfolioRect | null>(null);
 
+    // 画布只从宿主注入的实例读写，不直接碰单例：否则两个工作台会互相污染。
+    const store = usePortfolioStoreApi();
     const page = usePortfolioStore(currentPortfolioPage);
     const selectedIds = usePortfolioStore((state) => state.selectedIds);
     const viewport = usePortfolioStore((state) => state.viewport);
@@ -194,15 +197,15 @@ export function PortfolioCanvas({ onEditText, onReady }: PortfolioCanvasProps) {
         handleReadyRef.current = true;
         onReady({
             fit: () => {
-                const state = usePortfolioStore.getState();
+                const state = store.getState();
                 const target = currentPortfolioPage(state);
                 if (!target) return;
                 const rect = stageRef.current?.getBoundingClientRect();
                 if (!rect) return;
-                usePortfolioStore.getState().setViewport(fitViewTransform(target.width, target.height, rect.width, rect.height));
+                store.getState().setViewport(fitViewTransform(target.width, target.height, rect.width, rect.height));
             },
         });
-    }, [onReady, page]);
+    }, [onReady, page, store]);
 
     // 首次拿到页面尺寸时自动适配一次，避免打开就看到超出视口的页面。
     const autoFitRef = useRef(false);
@@ -211,8 +214,8 @@ export function PortfolioCanvas({ onEditText, onReady }: PortfolioCanvasProps) {
         autoFitRef.current = true;
         const rect = stageRef.current?.getBoundingClientRect();
         if (!rect) return;
-        usePortfolioStore.getState().setViewport(fitViewTransform(page.width, page.height, rect.width, rect.height));
-    }, [page, stageSize]);
+        store.getState().setViewport(fitViewTransform(page.width, page.height, rect.width, rect.height));
+    }, [page, stageSize, store]);
 
     // ---- 空格键切换抓手 ----
     useEffect(() => {
@@ -239,18 +242,18 @@ export function PortfolioCanvas({ onEditText, onReady }: PortfolioCanvasProps) {
         if (!stage) return;
         const onWheel = (event: WheelEvent) => {
             event.preventDefault();
-            const store = usePortfolioStore.getState();
+            const live = store.getState();
             const rect = stage.getBoundingClientRect();
             if (event.ctrlKey || event.metaKey) {
                 const factor = Math.exp(-event.deltaY * 0.0025);
-                store.zoomBy(factor, { x: event.clientX - rect.left, y: event.clientY - rect.top });
+                live.zoomBy(factor, { x: event.clientX - rect.left, y: event.clientY - rect.top });
                 return;
             }
-            store.setViewport({ panX: store.viewport.panX - event.deltaX, panY: store.viewport.panY - event.deltaY });
+            live.setViewport({ panX: live.viewport.panX - event.deltaX, panY: live.viewport.panY - event.deltaY });
         };
         stage.addEventListener("wheel", onWheel, { passive: false });
         return () => stage.removeEventListener("wheel", onWheel);
-    }, []);
+    }, [store]);
 
     const pagePointOf = useCallback((event: { clientX: number; clientY: number }): Point => {
         const rect = stageRef.current?.getBoundingClientRect();
@@ -260,16 +263,16 @@ export function PortfolioCanvas({ onEditText, onReady }: PortfolioCanvasProps) {
     const finishInteraction = useCallback(() => {
         const interaction = interactionRef.current;
         if (interaction.mode !== "idle" && "moved" in interaction && interaction.moved) {
-            usePortfolioStore.getState().endInteraction();
+            store.getState().endInteraction();
         }
         interactionRef.current = { mode: "idle" };
         drawGuides([], null);
         setMarquee(null);
-    }, [drawGuides]);
+    }, [drawGuides, store]);
 
     const onStagePointerDown = useCallback(
         (event: React.PointerEvent<HTMLDivElement>) => {
-            const state = usePortfolioStore.getState();
+            const state = store.getState();
             const target = currentPortfolioPage(state);
             if (!target) return;
             const point = pagePointOf(event);
@@ -293,7 +296,7 @@ export function PortfolioCanvas({ onEditText, onReady }: PortfolioCanvasProps) {
 
             // 点在已选中的元素上时保留整个选区一起拖，这是多选拖动的常见预期。
             if (!state.selectedIds.includes(hit.id)) state.toggleSelection(hit.id, additive);
-            const selection = usePortfolioStore.getState().selectedIds;
+            const selection = store.getState().selectedIds;
             const starts = new Map<string, Point>();
             for (const element of target.elements) {
                 if (selection.includes(element.id)) starts.set(element.id, { x: element.x, y: element.y });
@@ -304,15 +307,15 @@ export function PortfolioCanvas({ onEditText, onReady }: PortfolioCanvasProps) {
             event.currentTarget.setPointerCapture(event.pointerId);
             interactionRef.current = { mode: "move", startPage: point, starts, startBounds, moved: false };
         },
-        [pagePointOf, spacePressed],
+        [pagePointOf, spacePressed, store],
     );
 
     const onStagePointerMove = useCallback(
         (event: React.PointerEvent<HTMLDivElement>) => {
             const interaction = interactionRef.current;
             if (interaction.mode === "idle") return;
-            const store = usePortfolioStore.getState();
-            const page = currentPortfolioPage(store);
+            const live = store.getState();
+            const page = currentPortfolioPage(live);
             if (!page) return;
             const point = pagePointOf(event);
             const zoom = viewportRef.current.zoom;
@@ -321,7 +324,7 @@ export function PortfolioCanvas({ onEditText, onReady }: PortfolioCanvasProps) {
                 const dx = event.clientX - interaction.startScreen.x;
                 const dy = event.clientY - interaction.startScreen.y;
                 if (Math.abs(dx) > DRAG_THRESHOLD_SCREEN || Math.abs(dy) > DRAG_THRESHOLD_SCREEN) interaction.moved = true;
-                store.setViewport({ panX: interaction.startPan.x + dx, panY: interaction.startPan.y + dy });
+                live.setViewport({ panX: interaction.startPan.x + dx, panY: interaction.startPan.y + dy });
                 return;
             }
 
@@ -329,7 +332,7 @@ export function PortfolioCanvas({ onEditText, onReady }: PortfolioCanvasProps) {
                 const rect = normalizeRect({ x: interaction.startPage.x, y: interaction.startPage.y, width: point.x - interaction.startPage.x, height: point.y - interaction.startPage.y });
                 if (rect.width * zoom > DRAG_THRESHOLD_SCREEN || rect.height * zoom > DRAG_THRESHOLD_SCREEN) interaction.moved = true;
                 setMarquee(rect);
-                store.setSelection(marqueeSelect(page.elements, rect));
+                live.setSelection(marqueeSelect(page.elements, rect));
                 return;
             }
 
@@ -339,7 +342,7 @@ export function PortfolioCanvas({ onEditText, onReady }: PortfolioCanvasProps) {
                 if (Math.hypot(dx * zoom, dy * zoom) > DRAG_THRESHOLD_SCREEN) interaction.moved = true;
                 let guides: PortfolioSnapGuide[] = [];
                 const allUnrotated = page.elements.every((element) => !interaction.starts.has(element.id) || !element.rotation);
-                if (store.snapEnabled && interaction.moved && allUnrotated) {
+                if (live.snapEnabled && interaction.moved && allUnrotated) {
                     const moved: PortfolioRect = { ...interaction.startBounds, x: interaction.startBounds.x + dx, y: interaction.startBounds.y + dy };
                     const targets = page.elements.filter((element) => !interaction.starts.has(element.id)).map(elementBounds);
                     const snap = snapRect(moved, targets, { x: 0, y: 0, width: page.width, height: page.height }, SNAP_THRESHOLD_SCREEN / zoom);
@@ -347,8 +350,8 @@ export function PortfolioCanvas({ onEditText, onReady }: PortfolioCanvasProps) {
                     dx += snap.x - moved.x;
                     dy += snap.y - moved.y;
                 }
-                store.applyDocumentLive(
-                    applyPatches(store.document!, store.pageIndex, (element) => {
+                live.applyDocumentLive(
+                    applyPatches(live.document!, live.pageIndex, (element) => {
                         const start = interaction.starts.get(element.id);
                         return start ? { x: start.x + dx, y: start.y + dy } : null;
                     }),
@@ -362,7 +365,7 @@ export function PortfolioCanvas({ onEditText, onReady }: PortfolioCanvasProps) {
                 if (!element) return;
                 const next = resizeRectFromHandle(interaction.startRect, interaction.rotation, interaction.handle, point, { keepRatio: interaction.keepRatio });
                 interaction.moved = true;
-                store.applyDocumentLive(applyPatches(store.document!, store.pageIndex, (item) => (item.id === element.id ? next : null)));
+                live.applyDocumentLive(applyPatches(live.document!, live.pageIndex, (item) => (item.id === element.id ? next : null)));
                 return;
             }
 
@@ -373,29 +376,29 @@ export function PortfolioCanvas({ onEditText, onReady }: PortfolioCanvasProps) {
                 const raw = rotationFromPointer(center, point, { snap: event.shiftKey });
                 const rotation = event.shiftKey ? raw : raw - interaction.pointerOffset;
                 interaction.moved = true;
-                store.applyDocumentLive(applyPatches(store.document!, store.pageIndex, (item) => (item.id === element.id ? { rotation } : null)));
+                live.applyDocumentLive(applyPatches(live.document!, live.pageIndex, (item) => (item.id === element.id ? { rotation } : null)));
             }
         },
-        [drawGuides, pagePointOf],
+        [drawGuides, pagePointOf, store],
     );
 
     const onStagePointerUp = useCallback(() => finishInteraction(), [finishInteraction]);
 
     const onStageDoubleClick = useCallback(
         (event: React.MouseEvent<HTMLDivElement>) => {
-            const state = usePortfolioStore.getState();
+            const state = store.getState();
             const page = currentPortfolioPage(state);
             if (!page) return;
             const hit = hitTestElements(page.elements, pagePointOf(event));
             if (hit?.kind === "text" && onEditText) onEditText(hit.id);
         },
-        [onEditText, pagePointOf],
+        [onEditText, pagePointOf, store],
     );
 
     const beginHandleResize = useCallback(
         (handle: ResizeHandle) => (event: React.PointerEvent<HTMLDivElement>) => {
             event.stopPropagation();
-            const state = usePortfolioStore.getState();
+            const state = store.getState();
             const element = single;
             if (!element) return;
             state.beginInteraction();
@@ -421,7 +424,7 @@ export function PortfolioCanvas({ onEditText, onReady }: PortfolioCanvasProps) {
             window.addEventListener("pointermove", move);
             window.addEventListener("pointerup", up);
         },
-        [finishInteraction, onStagePointerMove, single],
+        [finishInteraction, onStagePointerMove, single, store],
     );
 
     const beginRotate = useCallback(
@@ -429,7 +432,7 @@ export function PortfolioCanvas({ onEditText, onReady }: PortfolioCanvasProps) {
             event.stopPropagation();
             const element = single;
             if (!element) return;
-            const state = usePortfolioStore.getState();
+            const state = store.getState();
             const center = elementCenter(element);
             const startRaw = rotationFromPointer(center, pagePointOf(event), { snap: false });
             state.beginInteraction();
@@ -445,7 +448,7 @@ export function PortfolioCanvas({ onEditText, onReady }: PortfolioCanvasProps) {
             window.addEventListener("pointermove", move);
             window.addEventListener("pointerup", up);
         },
-        [finishInteraction, onStagePointerMove, pagePointOf, single],
+        [finishInteraction, onStagePointerMove, pagePointOf, single, store],
     );
 
     const selectionChrome = useMemo(() => {

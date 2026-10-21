@@ -6,7 +6,7 @@
  * 单独测试，而交互层不需要关心快照逻辑。
  */
 
-import { create } from "zustand";
+import { create, type StateCreator, type StoreApi, type UseBoundStore } from "zustand";
 
 import { PORTFOLIO_MAX_DOC_BYTES, type PortfolioAlignMode, type PortfolioDocument, type PortfolioElement, type PortfolioElementPatch, type PortfolioPage } from "./contracts";
 import { arrangeInGrid, alignElements, createImageElement, createPortfolioPage, createTextElement, findPageIndexById, nextZIndex, normalizeZIndex, removeElements, reorderElements, updateElements, type PortfolioZOrderAction } from "./document";
@@ -111,7 +111,9 @@ function replacePage(document: PortfolioDocument, pageIndex: number, page: Portf
     return { ...document, pages: document.pages.map((item, index) => (index === pageIndex ? page : item)) };
 }
 
-export const usePortfolioStore = create<PortfolioStoreState>((set, get) => {
+export type PortfolioStore = UseBoundStore<StoreApi<PortfolioStoreState>>;
+
+const createPortfolioState: StateCreator<PortfolioStoreState> = (set, get) => {
     /**
      * 连续输入（拖动数值框、连打字）会产生大量微改动，如果每次都压栈，撤销就会
      * 退化成"一个字一个字退"。相同合并键在窗口期内的连续修改只保留最早那份快照。
@@ -503,7 +505,24 @@ export const usePortfolioStore = create<PortfolioStoreState>((set, get) => {
         resetViewport: () => set({ viewport: { zoom: 1, panX: 0, panY: 0 } }),
         toggleSnap: () => set((state) => ({ snapEnabled: !state.snapEnabled })),
     };
-});
+};
+
+/**
+ * 创建一份独立的编辑器会话。
+ *
+ * document / selectedIds / past / future / viewport / dirty 全是会话级状态：两个工作台
+ * （作品集、设计工作台）共用同一个实例就会互相污染，而类型系统完全发现不了。界面
+ * 组件必须通过 PortfolioStoreProvider 注入自己的实例，见 store-context.tsx。
+ */
+export function createPortfolioStore(): PortfolioStore {
+    return create<PortfolioStoreState>(createPortfolioState);
+}
+
+/**
+ * 向后兼容的默认实例：测试与非 React 调用方仍可直接使用。
+ * 界面组件不要用它，否则两个工作台会重新绑回同一份状态。
+ */
+export const usePortfolioStore = createPortfolioStore();
 
 /** 当前页的选中元素；选择器返回新数组，调用方应配合 useMemo 或只读使用。 */
 export function selectedElements(state: PortfolioStoreState) {

@@ -34,7 +34,8 @@ import {
 import { useEffect, useState } from "react";
 
 import type { PortfolioAlignMode } from "@/lib/portfolio/contracts";
-import { PORTFOLIO_MAX_ZOOM, PORTFOLIO_MIN_ZOOM, usePortfolioStore } from "@/lib/portfolio/store";
+import { PORTFOLIO_MAX_ZOOM, PORTFOLIO_MIN_ZOOM } from "@/lib/portfolio/store";
+import { usePortfolioStore, usePortfolioStoreApi } from "@/lib/portfolio/store-context";
 
 export type PortfolioToolbarProps = {
     onBack: () => void;
@@ -60,6 +61,7 @@ const ALIGN_ACTIONS: Array<{ mode: PortfolioAlignMode; label: string; icon: Reac
 
 export function PortfolioToolbar({ onBack, onSave, onClassify, onFit, classifyDisabled, classifying, documentSwitcher, exportMenu }: PortfolioToolbarProps) {
     const { message } = App.useApp();
+    const store = usePortfolioStoreApi();
     const title = usePortfolioStore((state) => state.document?.title ?? "");
     const dirty = usePortfolioStore((state) => state.dirty);
     const saving = usePortfolioStore((state) => state.saving);
@@ -176,7 +178,7 @@ export function PortfolioToolbar({ onBack, onSave, onClassify, onFit, classifyDi
                     <Button type="text" icon={<Magnet className="size-4" />} onClick={toggleSnap} className={snapEnabled ? "!text-sky-600" : "!text-foreground/40"} aria-label="对齐吸附" />
                 </Tooltip>
                 <Tooltip title="按当前缩放重置选中元素的旋转角度">
-                    <Button type="text" icon={<RotateCw className="size-4" />} disabled={!hasSelection} onClick={() => usePortfolioStore.getState().updateSelected({ rotation: 0 })} aria-label="重置旋转" />
+                    <Button type="text" icon={<RotateCw className="size-4" />} disabled={!hasSelection} onClick={() => store.getState().updateSelected({ rotation: 0 })} aria-label="重置旋转" />
                 </Tooltip>
                 <Button size="small" icon={classifying ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />} disabled={classifyDisabled || classifying} onClick={onClassify}>
                     Agent 分类配文

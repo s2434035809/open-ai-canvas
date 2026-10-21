@@ -25,7 +25,8 @@ import { createPortfolioDocument as createBlankDocument, createTextElement, next
 import { runPortfolioExport } from "@/lib/portfolio/export";
 import { PORTFOLIO_EXPORT_DEFAULT_SCALE, type PortfolioExportTarget } from "@/lib/portfolio/export/types";
 import { imageFilesFromDataTransfer, readLocalImage, uploadImageSource, uploadLocalImage } from "@/lib/portfolio/image-import";
-import { currentPortfolioPage, isPortfolioDocumentTooLarge, usePortfolioStore } from "@/lib/portfolio/store";
+import { currentPortfolioPage, isPortfolioDocumentTooLarge } from "@/lib/portfolio/store";
+import { PortfolioStoreProvider, usePortfolioStore, usePortfolioStoreApi } from "@/lib/portfolio/store-context";
 import { PORTFOLIO_STUDIO_PLUGIN_ID, portfolioStudioPlugin } from "@/lib/plugins/builtin/portfolio/portfolio-studio";
 import { createPortfolioDocument as createRemoteDocument, getPortfolioDocument, listPortfolioDocuments, savePortfolioDocument, type PortfolioDocumentSummary } from "@/services/api/portfolio";
 import { useEffectiveConfig } from "@/stores/use-config-store";
@@ -35,9 +36,24 @@ import "./portfolio.css";
 /** 右栏的两个用途：改属性 / 跟 Agent。同一列内切换，不额外挤占画布。 */
 type PortfolioRightPane = "properties" | "agent";
 
+/**
+ * 页面壳：为本次进入创建一份独立的编辑会话，再交给下面的内容组件。
+ *
+ * 会话实例不能是模块级单例：设计工作台也要复用同一套内核，两者必须各持一份
+ * document / 选中集 / 撤销栈，否则交替进入会互相污染。
+ */
 export default function PortfolioStudioPage() {
+    return (
+        <PortfolioStoreProvider>
+            <PortfolioStudioContent />
+        </PortfolioStoreProvider>
+    );
+}
+
+function PortfolioStudioContent() {
     const navigate = useNavigate();
     const { message } = App.useApp();
+    const storeApi = usePortfolioStoreApi();
     const config = useEffectiveConfig();
     const installations = usePluginStore((state) => state.installations);
     const ensurePlugin = usePluginStore((state) => state.ensurePlugin);
@@ -89,7 +105,7 @@ export default function PortfolioStudioPage() {
 
     const openDocument = useCallback(
         async (id: string) => {
-            const store = usePortfolioStore.getState();
+            const store = storeApi.getState();
             store.setLoading(true);
             try {
                 const view = await getPortfolioDocument(id);
@@ -107,38 +123,41 @@ export default function PortfolioStudioPage() {
                 void message.error("打开作品集失败，请稍后重试");
             }
         },
-        [message],
+        [message, storeApi],
     );
 
     const startNewDocument = useCallback(() => {
-        usePortfolioStore.getState().loadDocument(createBlankDocument("未命名作品集"));
+        storeApi.getState().loadDocument(createBlankDocument("未命名作品集"));
         canvasHandleRef.current?.fit();
-    }, []);
+    }, [storeApi]);
 
     // 首次进入：能打开最近的文档就打开，否则给一张空白草稿；后端不可用时降级为本地草稿。
+    //
+    // 已经持有文档时不再重新拉取：那是「用 loadDocument 覆盖」的隐式复用，会把当前
+    // 会话（包括未保存的修改）直接抹掉。清理由会话实例自己的生命周期负责。
     useEffect(() => {
+        if (storeApi.getState().document) return;
         let cancelled = false;
-        const store = usePortfolioStore.getState();
-        store.setLoading(true);
+        storeApi.getState().setLoading(true);
         void (async () => {
             try {
                 const data = await listPortfolioDocuments();
                 if (cancelled) return;
                 setDocuments(data.items);
                 if (data.items.length > 0) await openDocument(data.items[0].id);
-                else usePortfolioStore.getState().loadDocument(createBlankDocument());
+                else storeApi.getState().loadDocument(createBlankDocument());
             } catch {
                 if (cancelled) return;
-                usePortfolioStore.getState().loadDocument(createBlankDocument());
+                storeApi.getState().loadDocument(createBlankDocument());
                 void message.warning("未能连接后端，已切换为本地草稿模式，保存功能暂不可用");
             } finally {
-                if (!cancelled) usePortfolioStore.setState({ loading: false });
+                if (!cancelled) storeApi.setState({ loading: false });
             }
         })();
         return () => {
             cancelled = true;
         };
-    }, [message, openDocument]);
+    }, [message, openDocument, storeApi]);
 
     const refreshDocuments = useCallback(async () => {
         try {
@@ -150,44 +169,44 @@ export default function PortfolioStudioPage() {
     }, []);
 
     const save = useCallback(async () => {
-        const store = usePortfolioStore.getState();
+        const store = storeApi.getState();
         const doc = store.document;
         if (!doc) return;
         if (isPortfolioDocumentTooLarge(doc)) {
             void message.error(`文档已超过 ${Math.round(PORTFOLIO_MAX_DOC_BYTES / 1024 / 1024)}MB 上限，请减少内嵌图片或改用素材库图片`);
             return;
         }
-        usePortfolioStore.setState({ saving: true, error: "" });
+        storeApi.setState({ saving: true, error: "" });
         const coverUrl = doc.coverUrl || firstImageSource(doc);
         const payload = { title: doc.title, description: doc.description, coverUrl, pageCount: doc.pages.length, doc };
         try {
             const view = store.remoteId ? await savePortfolioDocument(store.remoteId, payload) : await createRemoteDocument(payload);
-            usePortfolioStore.getState().markSaved({ remoteId: view.id, revision: view.revision });
+            storeApi.getState().markSaved({ remoteId: view.id, revision: view.revision });
             void message.success("已保存到作品集列表");
             await refreshDocuments();
         } catch (reason) {
             const text = reason instanceof Error ? reason.message : "保存失败";
-            usePortfolioStore.setState({ saving: false, error: text });
+            storeApi.setState({ saving: false, error: text });
             void message.error(`保存失败：${text}`);
         }
-    }, [message, refreshDocuments]);
+    }, [message, refreshDocuments, storeApi]);
 
     // ---- 拖拽导入 ----
     const importFiles = useCallback(
         async (files: File[]) => {
-            const store = usePortfolioStore.getState();
+            const store = storeApi.getState();
             for (const file of files) {
                 const image = await readLocalImage(file);
                 if (!image) continue;
                 const elementId = store.addImage({ src: image.dataUrl, naturalWidth: image.width, naturalHeight: image.height });
                 void uploadLocalImage(file, image).then((uploaded) => {
                     if (!elementId) return;
-                    if (uploaded) usePortfolioStore.getState().updateElement(elementId, uploaded);
+                    if (uploaded) storeApi.getState().updateElement(elementId, uploaded);
                 });
             }
             if (files.length > 0) void message.success(`已导入 ${files.length} 张图片`);
         },
-        [message],
+        [message, storeApi],
     );
 
     const onDrop = useCallback(
@@ -210,7 +229,7 @@ export default function PortfolioStudioPage() {
     //      assetId 的旧快照，看图会整批失败。
     const runAgent = useCallback(
         async (instruction?: string) => {
-            const store = usePortfolioStore.getState();
+            const store = storeApi.getState();
             const page = currentPortfolioPage(store);
             if (!page) return;
             const images = page.elements.filter((element) => element.kind === "image").slice(0, PORTFOLIO_AGENT_MAX_IMAGES);
@@ -239,7 +258,7 @@ export default function PortfolioStudioPage() {
                         uploading.map(async (element) => {
                             if (element.kind !== "image") return 0;
                             const uploaded = await uploadImageSource(element.src, { width: element.naturalWidth, height: element.naturalHeight });
-                            if (uploaded) usePortfolioStore.getState().updateElement(element.id, uploaded);
+                            if (uploaded) storeApi.getState().updateElement(element.id, uploaded);
                             return uploaded ? 0 : 1;
                         }),
                     );
@@ -249,16 +268,16 @@ export default function PortfolioStudioPage() {
                 if (controller.signal.aborted) return;
 
                 setAgentStage("正在保存作品集…");
-                const latest = usePortfolioStore.getState();
+                const latest = storeApi.getState();
                 if (!latest.remoteId || latest.dirty) await save();
-                const documentId = usePortfolioStore.getState().remoteId;
+                const documentId = storeApi.getState().remoteId;
                 if (!documentId) {
                     void message.error("作品集还没保存到服务端，Agent 读不到内容；请先确认后端可用后重试");
                     return;
                 }
 
                 // 以落库后的文档为准重新取目标：补传成功的图片此时才有 assetId。
-                const readyPage = currentPortfolioPage(usePortfolioStore.getState());
+                const readyPage = currentPortfolioPage(storeApi.getState());
                 if (!readyPage) return;
                 const targets = readyPage.elements.filter((element) => element.kind === "image" && element.assetId.trim() !== "").slice(0, PORTFOLIO_AGENT_MAX_IMAGES);
                 if (targets.length === 0) {
@@ -297,15 +316,15 @@ export default function PortfolioStudioPage() {
                 if (controller.signal.aborted) return;
 
                 // 建议只对"仍然存在"的元素生效：运行期间用户可能删过元素或换了页。
-                const currentPageAfterRun = currentPortfolioPage(usePortfolioStore.getState());
-                const narrowedOptions = narrowLayoutOptions(result.layoutOptions, usePortfolioStore.getState().document);
+                const currentPageAfterRun = currentPortfolioPage(storeApi.getState());
+                const narrowedOptions = narrowLayoutOptions(result.layoutOptions, storeApi.getState().document);
                 if (narrowedOptions.length > 0) {
                     setLayoutOptions(narrowedOptions);
                     setSelectedLayout(null);
                     setAppliedLayout(null);
                 }
                 // 本轮方案落盘（整体覆盖）；本轮一无所获时清掉上轮数据，避免刷新后看到过期的旧方案。
-                persistPortfolioLayoutOptions(usePortfolioStore.getState().remoteId ?? "", result.layoutOptions);
+                persistPortfolioLayoutOptions(storeApi.getState().remoteId ?? "", result.layoutOptions);
                 const reviewed: PortfolioProposalReviewItem[] = [];
                 const seen = new Set<string>();
                 for (const proposal of result.proposals) {
@@ -341,7 +360,7 @@ export default function PortfolioStudioPage() {
                 setAgentStage("");
             }
         },
-        [config, message, save],
+        [config, message, save, storeApi],
     );
 
     const toggleReviewItem = useCallback((elementId: string, accepted: boolean) => {
@@ -350,7 +369,7 @@ export default function PortfolioStudioPage() {
 
     /** 提议制落地：只有用户勾过的条目才写进文档，且一次性提交，撤销回到分析前。 */
     const applyReviewedProposals = useCallback(() => {
-        const store = usePortfolioStore.getState();
+        const store = storeApi.getState();
         const page = currentPortfolioPage(store);
         const patches = new Map<string, PortfolioElementPatch>();
         for (const item of reviewItems) {
@@ -369,14 +388,14 @@ export default function PortfolioStudioPage() {
         // 看到「已写入」却什么都没保存，刷新即丢。
         void save();
         void message.success(`已写入 ${patches.size} 张图片的分类与图注`);
-    }, [message, reviewItems, save]);
+    }, [message, reviewItems, save, storeApi]);
 
     /** 选定版式应用：既有元素打补丁 + 新增文本元素，同属一次撤销记录，随后落库并前进到下一页。 */
     const applySelectedLayout = useCallback(() => {
         if (selectedLayout === null) return;
         const option = layoutOptions[selectedLayout];
         if (!option) return;
-        const store = usePortfolioStore.getState();
+        const store = storeApi.getState();
         // 方案绑定的是它出生时的页：用户可能已经翻页，先切回去再应用，
         // 否则补丁会打到错页、新元素也会落到错页。
         if (option.pageId) {
@@ -384,7 +403,7 @@ export default function PortfolioStudioPage() {
             const index = document?.pages.findIndex((item) => item.id === option.pageId) ?? -1;
             if (index >= 0 && index !== store.pageIndex) store.setPageIndex(index);
         }
-        const page = currentPortfolioPage(usePortfolioStore.getState());
+        const page = currentPortfolioPage(storeApi.getState());
         if (!page) return;
         const byId = new Map(page.elements.map((element) => [element.id, element]));
         const patches = new Map<string, PortfolioElementPatch>();
@@ -442,36 +461,36 @@ export default function PortfolioStudioPage() {
         // 与图注落地同一纪律：界面承诺「应用」就必须落库，否则刷新即丢。
         void save();
         // 前进到下一页（最后一页则回到第一页重排），驱动下一步指令。
-        const document = usePortfolioStore.getState().document;
+        const document = storeApi.getState().document;
         if (document && document.pages.length > 1) {
-            const current = usePortfolioStore.getState().pageIndex;
-            usePortfolioStore.getState().setPageIndex(current + 1 < document.pages.length ? current + 1 : 0);
+            const current = storeApi.getState().pageIndex;
+            storeApi.getState().setPageIndex(current + 1 < document.pages.length ? current + 1 : 0);
         }
         setLayoutOptions([]);
         setSelectedLayout(null);
         setAppliedLayout({ name: option.name, title: option.title });
         // 方案已落进文档：清掉持久化，刷新后不该再弹回同一批卡片（重应用会重复新建文本元素）。
-        persistPortfolioLayoutOptions(usePortfolioStore.getState().remoteId ?? "", []);
+        persistPortfolioLayoutOptions(storeApi.getState().remoteId ?? "", []);
         void message.success(`已按「${option.name}」应用版式（可一键撤销）`);
-    }, [layoutOptions, message, save, selectedLayout]);
+    }, [layoutOptions, message, save, selectedLayout, storeApi]);
 
     /** 「继续下一步」：按已应用方案生成下轮指令，直接开跑。 */
     const continueNextStep = useCallback(() => {
         if (!appliedLayout) return;
-        const document = usePortfolioStore.getState().document;
+        const document = storeApi.getState().document;
         const pageCount = document?.pages.length ?? 1;
         const titleSuffix = appliedLayout.title ? `（主标：${appliedLayout.title}）` : "";
         const target = pageCount > 1 ? "下一页" : "当前页";
         void runAgent(
             `上一步已按「${appliedLayout.name}」${titleSuffix}完成排版。请继续${target}：先读取该页元素，逐张查看图片画面，再提交 2-4 个版式方案供用户挑选。`,
         );
-    }, [appliedLayout, runAgent]);
+    }, [appliedLayout, runAgent, storeApi]);
 
     const discardLayoutOptions = useCallback(() => {
         setLayoutOptions([]);
         setSelectedLayout(null);
-        persistPortfolioLayoutOptions(usePortfolioStore.getState().remoteId ?? "", []);
-    }, []);
+        persistPortfolioLayoutOptions(storeApi.getState().remoteId ?? "", []);
+    }, [storeApi]);
 
     const continueHint = appliedLayout
         ? `「${appliedLayout.name}」已应用${appliedLayout.title ? `，主标「${appliedLayout.title}」已落版` : ""}`
@@ -482,7 +501,7 @@ export default function PortfolioStudioPage() {
     // ---- 导出 ----
     const runExport = useCallback(
         async (target: PortfolioExportTarget) => {
-            const store = usePortfolioStore.getState();
+            const store = storeApi.getState();
             const doc = store.document;
             if (!doc) return;
             if (isPortfolioDocumentTooLarge(doc)) {
@@ -514,7 +533,7 @@ export default function PortfolioStudioPage() {
                 setExportStage("");
             }
         },
-        [exportIncludeMeta, exportScale, message],
+        [exportIncludeMeta, exportScale, message, storeApi],
     );
 
     // ---- 文字编辑 ----
@@ -530,7 +549,7 @@ export default function PortfolioStudioPage() {
     useEffect(() => {
         const onKeyDown = (event: KeyboardEvent) => {
             if (isTypingTarget(event.target)) return;
-            const store = usePortfolioStore.getState();
+            const store = storeApi.getState();
             const meta = event.metaKey || event.ctrlKey;
             if (meta && event.key.toLowerCase() === "z") {
                 event.preventDefault();
@@ -579,7 +598,7 @@ export default function PortfolioStudioPage() {
         };
         window.addEventListener("keydown", onKeyDown);
         return () => window.removeEventListener("keydown", onKeyDown);
-    }, [save]);
+    }, [save, storeApi]);
 
     if (!enabled && !booting) {
         return (
@@ -669,7 +688,7 @@ export default function PortfolioStudioPage() {
                                 canvasHandleRef.current = handle;
                             }}
                             onEditText={(elementId) => {
-                                const store = usePortfolioStore.getState();
+                                const store = storeApi.getState();
                                 const page = currentPortfolioPage(store);
                                 const element = page?.elements.find((item) => item.id === elementId);
                                 if (element?.kind !== "text") return;
@@ -747,7 +766,7 @@ export default function PortfolioStudioPage() {
                 title="编辑文字"
                 onCancel={closeTextEditor}
                 onOk={() => {
-                    if (editingTextId) usePortfolioStore.getState().updateElement(editingTextId, { text: textDraft });
+                    if (editingTextId) storeApi.getState().updateElement(editingTextId, { text: textDraft });
                     closeTextEditor();
                 }}
                 okText="确定"
