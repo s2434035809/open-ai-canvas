@@ -100,6 +100,16 @@ services:
         condition: service_completed_successfully
       yingce-agent:
         condition: service_healthy
+    # 启动期会跑迁移校验与若干后台巡检查询，数据库繁忙时 /api/health/ready 可能
+    # 数十秒才返回。镜像内默认 3 秒超时 3 次重试会让容器在真正就绪前被判 unhealthy，
+    # 导致 `docker compose up -d` 因依赖不健康而失败、在线更新整体回滚。
+    # 这里放宽容错窗口，只放宽「等待多久」，不放宽「是否真的就绪」。
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/api/health/ready >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 20s
+      retries: 30
+      start_period: 180s
     restart: unless-stopped
     stop_grace_period: ${CANVAS_SHUTDOWN_TIMEOUT:-10m}
 
