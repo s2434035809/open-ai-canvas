@@ -31,6 +31,9 @@ func protocolRequestFromInput(input canvasGenerationInput) protocol.GenerationRe
 		}
 	}
 	aspectRatio := input.Config.Size
+	if input.Mode == "video" && strings.EqualFold(strings.TrimSpace(input.Config.InterfaceType), "grsai-minimax-h3") {
+		aspectRatio = normalizeGrsaiMiniMaxH3AspectRatio(aspectRatio)
+	}
 	if input.Mode == "image" && strings.TrimSpace(input.Config.InterfaceType) == string(model.ChannelInterfaceOpenAIImage) {
 		aspectRatio = normalizePixelSize(aspectRatio)
 	}
@@ -55,15 +58,15 @@ func protocolRequestFromInput(input canvasGenerationInput) protocol.GenerationRe
 		Watermark:       parseBool(input.Config.VideoWatermark, false),
 		Operation:       firstNonEmpty(metadataString(input.Metadata, "videoEditOperation"), metadataString(input.Metadata, "videoOperation")),
 		Extra: map[string]any{
-			"videoSeconds":      input.Config.VideoSeconds,
-			"audioVoice":        input.Config.AudioVoice,
-			"audioFormat":       input.Config.AudioFormat,
+			"videoSeconds":          input.Config.VideoSeconds,
+			"audioVoice":            input.Config.AudioVoice,
+			"audioFormat":           input.Config.AudioFormat,
 			"transparentBackground": input.Config.TransparentBackground,
-			"audioSpeed":        input.Config.AudioSpeed,
-			"audioInstructions": input.Config.AudioInstructions,
-			"audioLanguage":     input.Config.AudioLanguage,
-			"audioDialect":      input.Config.AudioDialect,
-			"count":             input.Config.Count,
+			"audioSpeed":            input.Config.AudioSpeed,
+			"audioInstructions":     input.Config.AudioInstructions,
+			"audioLanguage":         input.Config.AudioLanguage,
+			"audioDialect":          input.Config.AudioDialect,
+			"count":                 input.Config.Count,
 		},
 	}
 	for _, message := range input.TextHistory {

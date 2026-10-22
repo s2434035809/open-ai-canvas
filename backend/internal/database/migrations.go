@@ -11,7 +11,7 @@ import (
 	"gorm.io/gorm"
 )
 
-const CurrentSchemaVersion int64 = 60
+const CurrentSchemaVersion int64 = 61
 
 const baselineSchemaChecksum = "sha256:open-ai-canvas-schema-v1-20260830"
 const schemaMigrationAppliedAtIndexChecksum = "sha256:schema-migrations-applied-at-index-v2-20260830"
@@ -219,6 +219,8 @@ var schemaMigrations = []migration{
 	{version: 60, name: "design_documents", checksum: designDocumentsChecksum, apply: func(tx *gorm.DB) error {
 		return tx.AutoMigrate(&model.DesignDocument{})
 	}},
+	// 首页 Agent 工作流的表结构来自上游 PR #823；dev 已占用 v58-v60，这里顺延为 v61。
+	{version: 61, name: "homepage_agent_workflow", checksum: "sha256:homepage-agent-workflow-v61", apply: migrateHomepageAgentWorkflow},
 }
 
 func migrateChannelModelProtocolLength(tx *gorm.DB) error {

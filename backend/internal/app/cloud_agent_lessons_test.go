@@ -299,6 +299,9 @@ func TestLessonTaskTextCoversPromptPlanAndCalls(t *testing.T) {
 }
 
 func TestLessonCategoryIsControlled(t *testing.T) {
+	if label, ok := cloudAgentLessonCategoryOf("smart_creation"); !ok || label != "smart_creation" {
+		t.Fatal("智能创作分类未注册")
+	}
 	if _, ok := cloudAgentLessonCategoryOf("storyboard"); !ok {
 		t.Fatal("合法分类被拒")
 	}
@@ -425,7 +428,7 @@ func TestLessonSearchFindsMergeLessonByRealKeyword(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got, err := cloudAgentSearchLessons(repo, "user-a", "分镜 合并 视频 合成 拼接 one take", 5)
+	got, err := cloudAgentSearchLessons(repo, "user-a", "分镜 合并 视频 合成 拼接 one take", "canvas", "", 5)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -446,7 +449,7 @@ func TestLessonSearchNoMatchReturnsActionableError(t *testing.T) {
 	if err := repo.Create(&entry); err != nil {
 		t.Fatal(err)
 	}
-	_, err := cloudAgentRecallLessons(repo, "user-a", cloudAgentCall{
+	_, err := cloudAgentRecallLessons(repo, "user-a", "canvas", cloudAgentCall{
 		Function: struct {
 			Name      string `json:"name"`
 			Arguments string `json:"arguments"`
@@ -485,7 +488,7 @@ func TestLessonsBlockDoesNotAutoInject(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	block, ids := s.cloudAgentRelevantLessonsBlock("user-a", "写画布时报快照过期")
+	block, ids := s.cloudAgentRelevantLessonsBlock("user-a", "写画布时报快照过期", "canvas")
 	if len(ids) != 1 || !strings.Contains(block, "canvas.snapshot-hash") {
 		t.Fatalf("相关记忆应进入召回结果：%s ids=%v", block, ids)
 	}
@@ -585,7 +588,7 @@ func TestAttachLessonsUsesRelevantDynamicMessage(t *testing.T) {
 		SystemPrompt: "system",
 		Messages:     []map[string]any{{"role": "user", "content": "把图片资产接到指定镜头"}},
 	}
-	s.attachCloudAgentLessons(&canonical, "user-a", "把图片资产接到指定镜头")
+	s.attachCloudAgentLessons(&canonical, "user-a", "把图片资产接到指定镜头", "canvas")
 	if canonical.SystemPrompt != "system" {
 		t.Fatalf("动态记忆不得改变稳定 system 前缀：%s", canonical.SystemPrompt)
 	}
@@ -599,7 +602,7 @@ func TestAttachLessonsUsesRelevantDynamicMessage(t *testing.T) {
 	if err != nil || stored.Injected != 0 {
 		t.Fatalf("上下文预览不得提前递增注入计数：%+v (%v)", stored, err)
 	}
-	s.attachCloudAgentLessons(&canonical, "user-a", "分析天气")
+	s.attachCloudAgentLessons(&canonical, "user-a", "分析天气", "canvas")
 	if canonical.SystemPrompt != "system" || len(canonical.Messages) != 1 {
 		t.Fatalf("无相关经验时不应注入，且应移除上一步的动态块：%+v", canonical.Messages)
 	}

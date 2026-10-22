@@ -64,7 +64,7 @@ func cloudAgentHandleAskUser(repo *repository.Repository, userID string, state *
 }
 
 func cloudAgentHandleRecallLessons(repo *repository.Repository, userID string, state *cloudAgentRuntime, call cloudAgentCall, services ...*Service) (any, error) {
-	return cloudAgentRecallLessons(repo, userID, call)
+	return cloudAgentRecallLessons(repo, userID, state.Request.Surface, call)
 }
 
 func cloudAgentHandleRememberLesson(repo *repository.Repository, userID string, state *cloudAgentRuntime, call cloudAgentCall, services ...*Service) (any, error) {
@@ -326,6 +326,12 @@ func cloudAgentHandleImageAnnotationRender(repo *repository.Repository, userID s
 }
 
 func cloudAgentHandleSkillSearch(repo *repository.Repository, userID string, state *cloudAgentRuntime, call cloudAgentCall, services ...*Service) (any, error) {
+	// 检索范围必须与读取/策略同口径：当前入口不可用的技能不得出现在候选索引里。
+	for _, skill := range state.Skills {
+		if err := validateCloudAgentSkillSurface(skill, state.Request.Surface); err != nil {
+			return nil, err
+		}
+	}
 	var args struct {
 		Keyword string `json:"keyword"`
 		Limit   int    `json:"limit"`
@@ -353,6 +359,9 @@ func cloudAgentHandleSkillReadFile(repo *repository.Repository, userID string, s
 	}
 	for _, skill := range state.Skills {
 		if skill.ID == args.SkillID {
+			if err := validateCloudAgentSkillSurface(skill, state.Request.Surface); err != nil {
+				return nil, err
+			}
 			if args.Path == "" {
 				return map[string]any{"version": skill.Version, "entryPath": cloudAgentSkillEntryPath, "files": cloudAgentSkillPaths(skill), "guidance": "先读取 SKILL.md，再只读取入口明确引用且当前任务需要的参考文件。只能读取 files 中列出的路径；不要重复列目录或猜测路径"}, nil
 			}
@@ -365,7 +374,11 @@ func cloudAgentHandleSkillReadFile(repo *repository.Repository, userID string, s
 					return nil, creationConflict("技能已更新或不可用，请重试")
 				}
 				if args.Path == cloudAgentSkillEntryPath {
-					return cloudAgentSkillPage(skill.Version, args.Path, detail.Instruction, args.Offset)
+					result, pageErr := cloudAgentSkillPage(skill.Version, args.Path, detail.Instruction, args.Offset)
+					if pageErr == nil {
+						cloudAgentCreationSkillRead(state, call)
+					}
+					return result, pageErr
 				}
 				if _, ok := skill.Files[args.Path]; !ok {
 					return nil, BadAuthRequest("参考文件未包含在本轮固定快照中")
@@ -387,6 +400,7 @@ func cloudAgentHandleSkillReadFile(repo *repository.Repository, userID string, s
 				return cloudAgentSkillPage(skill.Version, args.Path, file.Content, args.Offset)
 			}
 			if args.Path == cloudAgentSkillEntryPath && strings.TrimSpace(skill.Instruction) != "" {
+				cloudAgentCreationSkillRead(state, call)
 				return map[string]any{"version": skill.Version, "path": args.Path, "content": skill.Instruction}, nil
 			}
 			if content, ok := skill.Files[args.Path]; ok && content != "" {
@@ -398,6 +412,41 @@ func cloudAgentHandleSkillReadFile(repo *repository.Repository, userID string, s
 	return nil, BadAuthRequest("技能未在本轮启用，或参考文件未包含在固定快照中")
 }
 
+// cloudAgentCreationTaskReadable 限定首页创作会话可读的任务范围。
+//
+// 只有三类任务对本轮可读：调用方显式带入的普通创作任务、本轮自己创建的任务、
+// 以及同一会话（SessionID）下其他轮次创建的 Agent 任务。任务归属必须由服务端
+// 记录推导，不能凭调用方传入的 taskId 或另一个 surface 的会话 ID 放行。
+func cloudAgentCreationTaskReadable(repo *repository.Repository, userID string, state *cloudAgentRuntime, task *model.Task) bool {
+	if task == nil {
+		return false
+	}
+	if cloudAgentCreationContextAllowsTask(state.Request, task) {
+		return true
+	}
+	for _, id := range state.TaskIDs {
+		if id == task.ID {
+			return true
+		}
+	}
+	if state.CommercePlan != nil {
+		for _, item := range state.CommercePlan.Items {
+			if cloudAgentCommerceTaskID(userID, state.CommercePlan, item.ID, state.Request.SessionID) == task.ID {
+				return true
+			}
+		}
+	}
+	// A continuation keeps the server session but starts a new run: authorize its
+	// prior task by the owning run, never by a caller-supplied task ID.
+	if state.Request.SessionID != "" && task.AgentRunID != "" && task.ProjectID == "" {
+		owner, ownerErr := repo.CloudAgent(userID, task.AgentRunID)
+		if ownerErr == nil && owner.Surface == "creation" && owner.SessionID == state.Request.SessionID {
+			return true
+		}
+	}
+	return false
+}
+
 func cloudAgentHandleTaskGet(repo *repository.Repository, userID string, state *cloudAgentRuntime, call cloudAgentCall, services ...*Service) (any, error) {
 	var args agenttool.TaskGetArgs
 	if err := decodeCloudAgentJSONObject(call.Function.Arguments, &args); err != nil {
@@ -407,8 +456,20 @@ func cloudAgentHandleTaskGet(repo *repository.Repository, userID string, state *
 	if err != nil {
 		return nil, err
 	}
-	if task.ProjectID != state.Request.CanvasID {
+	if state.Request.Surface == "creation" {
+		if !cloudAgentCreationTaskReadable(repo, userID, state, task) {
+			return nil, BadAuthRequest("只能读取本会话 Agent 任务或本轮明确带入的普通创作任务")
+		}
+	} else if task.ProjectID != state.Request.CanvasID {
 		return nil, BadAuthRequest("不能读取其他画布的任务")
+	}
+	if len(services) > 0 && services[0] != nil {
+		// 任务回执与对账必须落回持久记录：只读工具不能凭一次查询改写诊断，
+		// 但已确认的机器派发状态需要先在服务端收敛，再呈现给模型。
+		services[0].hydrateTaskProviderRequestID(task)
+		if err := services[0].reconcileRecordedTaskRejection(task); err != nil {
+			return nil, err
+		}
 	}
 	result := cloudAgentTaskDiagnostic(repo, task)
 	result["status"] = task.Status

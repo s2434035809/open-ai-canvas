@@ -1,15 +1,16 @@
-// 画布 Agent 的技能（Skills）检索：按关键词在已启用技能的名称、描述与方法卡文件名中
+// Agent 的技能（Skills）检索：按关键词在已启用技能的名称、描述与方法卡文件名中
 // 打分（含中文 2-gram 展开）、截取片段。
 //
 // 检索完全在内存中进行，不调用模型；结果按预算裁剪，避免把整份技能正文塞进上下文。
 //
-// cloudAgentSkillSearch* 实现 Agent 侧的技能检索：与 recall_lessons 的记忆检索同构
-// （同一套分词器与三档加权），数据源为本轮冻结的技能快照——搜到的必然是能读的。
+// 数据源为本轮冻结的技能快照——搜到的必然是能读的。
 // 只返回「哪张卡值得读 + 路径」，正文仍走 skill_read_file 的渐进披露，技能内容永不整体内联。
 
 package app
 
 import (
+	"encoding/json"
+	"fmt"
 	"sort"
 	"strings"
 	"unicode"
@@ -22,11 +23,72 @@ type cloudAgentSkill struct {
 	Description string            `json:"description,omitempty"`
 	Version     string            `json:"version"`
 	Hash        string            `json:"hash"`
+	Surfaces    []string          `json:"surfaces,omitempty"`
 	Instruction string            `json:"instruction,omitempty"`
 	Files       map[string]string `json:"files,omitempty"`
 }
 
 const cloudAgentSkillEntryPath = "SKILL.md"
+
+// Skills predate the homepage surface. An undeclared package retains its
+// original canvas scope; sharing a method requires an explicit package contract.
+func cloudAgentSkillSurfaces(instruction string) ([]string, error) {
+	lines := strings.Split(strings.ReplaceAll(strings.TrimSpace(instruction), "\r\n", "\n"), "\n")
+	if len(lines) == 0 || lines[0] != "---" {
+		return []string{cloudAgentDefaultSurface}, nil
+	}
+	var surfaces []string
+	declared, closed := false, false
+	for _, line := range lines[1:] {
+		if strings.TrimSpace(line) == "---" {
+			closed = true
+			break
+		}
+		if line != strings.TrimLeft(line, " \t") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, ":")
+		if !ok || strings.TrimSpace(key) != "agentSurfaces" {
+			continue
+		}
+		if declared || json.Unmarshal([]byte(strings.TrimSpace(value)), &surfaces) != nil {
+			return nil, BadAuthRequest("技能 agentSurfaces 必须是入口名称的 JSON 数组")
+		}
+		declared = true
+	}
+	if !declared {
+		return []string{cloudAgentDefaultSurface}, nil
+	}
+	if !closed || len(surfaces) == 0 {
+		return nil, BadAuthRequest("技能 agentSurfaces 必须在完整元数据中声明至少一个入口")
+	}
+	seen := map[string]bool{}
+	for _, surface := range surfaces {
+		if (surface != "creation" && surface != "canvas") || seen[surface] {
+			return nil, BadAuthRequest("技能 agentSurfaces 只允许不重复的 creation、canvas")
+		}
+		seen[surface] = true
+	}
+	return surfaces, nil
+}
+
+func validateCloudAgentSkillSurface(skill cloudAgentSkill, surface string) error {
+	surface = firstNonEmpty(surface, cloudAgentDefaultSurface)
+	surfaces := skill.Surfaces
+	if len(surfaces) == 0 {
+		surfaces = []string{cloudAgentDefaultSurface}
+	}
+	for _, allowed := range surfaces {
+		if allowed == surface {
+			return nil
+		}
+	}
+	label := "画布助手"
+	if surface == "creation" {
+		label = "首页创作"
+	}
+	return BadAuthRequest(fmt.Sprintf("技能“%s”未声明支持%s入口；请取消选择该技能，或由技能作者更新入口声明", skill.Name, label))
+}
 
 func cloudAgentSkillPaths(skill cloudAgentSkill) []string {
 	paths := make([]string, 0, len(skill.Files)+1)
@@ -47,32 +109,19 @@ func cloudAgentSkillPaths(skill cloudAgentSkill) []string {
 }
 
 const (
-	cloudAgentSkillSearchTokenMax = 8
-	cloudAgentSkillSearchDefault  = 8
-	cloudAgentSkillSearchMax      = 20
-	cloudAgentSkillSnippetRunes   = 120
+	cloudAgentSkillSearchTokenMax         = 8
+	cloudAgentSkillSearchExpandedTokenMax = 64
+	cloudAgentSkillSearchDefault          = 8
+	cloudAgentSkillSearchMax              = 20
+	cloudAgentSkillSnippetRunes           = 120
 	// 一次检索最多下发多少条卡路径（所有命中条目共享预算），防止大包把上下文撑爆。
 	cloudAgentSkillSearchCardBudget = 40
-	// 2-gram 展开后 token 总量上限（含原始 token）：防止超长关键词放大打分开销。
-	// 不并入 tokenMax——长句尾部的 gram 往往才是关键命中词，不能因字段数上限截掉。
-	cloudAgentSkillSearchGramMax = 56
 )
 
 func cloudAgentSkillSearchTokens(keyword string) []string {
 	tokens := make([]string, 0, cloudAgentSkillSearchTokenMax)
 	seen := make(map[string]bool, cloudAgentSkillSearchTokenMax)
-	addToken := func(token string) {
-		if seen[token] {
-			return
-		}
-		seen[token] = true
-		tokens = append(tokens, token)
-	}
-	fields := 0
 	for _, raw := range strings.FieldsFunc(keyword, cloudAgentSkillTokenSeparator) {
-		if fields >= cloudAgentSkillSearchTokenMax {
-			break
-		}
 		token := strings.ToLower(strings.TrimSpace(raw))
 		// 单字停用词过滤照拿的是英文逻辑（a / I）；汉字单字「梗」「钩」「戏」本身是完整
 		// 语义的最小单位。一刀切丢后 tokens 为空，检索会退化成「列全部已启用技能索引」。
@@ -82,31 +131,32 @@ func cloudAgentSkillSearchTokens(keyword string) []string {
 		if (!singleHan && utf8.RuneCountInString(token) < 2) || seen[token] {
 			continue
 		}
-		fields++
-		addToken(token)
-		// 模型常把中文自然语句整句当关键词（无分隔符时上面切不开），整串 Contains
-		// 几乎必然落空，模型随即把「没搜到」当成「没有适用技能」。含汉字且超过
-		// 2 字的 token 展开成重叠 2-gram：「反转结尾」→ 反转/转结/结尾，名称、
-		// 描述或卡名含任一片段即可参与排序；整串命中时全部 gram 命中，得分自然
-		// 更高。英文等纯 ASCII token 保持整串匹配，避免 gram 噪声。
-		runes := []rune(token)
-		if singleHan || !cloudAgentSkillContainsHan(runes) {
-			continue
+		seen[token] = true
+		tokens = append(tokens, token)
+		if len(tokens) >= cloudAgentSkillSearchTokenMax {
+			break
 		}
-		for i := 0; i+1 < len(runes) && len(tokens) < cloudAgentSkillSearchTokenMax+cloudAgentSkillSearchGramMax; i++ {
-			addToken(string(runes[i : i+2]))
+	}
+	// 先保留原始关键词，再按共享预算展开连续汉字；混合文本中的英文不拆成
+	// 双字母片段，避免 weatherstation 等无关词命中 consumer-psychology。
+	originalCount := len(tokens)
+	for _, token := range tokens[:originalCount] {
+		runes := []rune(token)
+		for i := 0; i+1 < len(runes); i++ {
+			if len(tokens) >= cloudAgentSkillSearchExpandedTokenMax {
+				return tokens
+			}
+			if !unicode.Is(unicode.Han, runes[i]) || !unicode.Is(unicode.Han, runes[i+1]) {
+				continue
+			}
+			gram := string(runes[i : i+2])
+			if !seen[gram] {
+				seen[gram] = true
+				tokens = append(tokens, gram)
+			}
 		}
 	}
 	return tokens
-}
-
-func cloudAgentSkillContainsHan(runes []rune) bool {
-	for _, r := range runes {
-		if unicode.Is(unicode.Han, r) {
-			return true
-		}
-	}
-	return false
 }
 
 func cloudAgentSkillTokenSeparator(r rune) bool {
@@ -184,7 +234,7 @@ func cloudAgentSkillMatch(skill cloudAgentSkill, tokens []string) (int, string) 
 }
 
 // cloudAgentSkillRuneIndex 在 rune 序列里做朴素子串查找，返回 rune 下标（未命中 -1）。
-// 描述只有数百字、token 最多 8 个，朴素查找足够，且避免字节/rune 下标混用。
+// 描述只有数百字、token 最多 64 个，朴素查找足够，且避免字节/rune 下标混用。
 func cloudAgentSkillRuneIndex(hay, needle []rune) int {
 	if len(needle) == 0 || len(needle) > len(hay) {
 		return -1
@@ -259,13 +309,24 @@ func cloudAgentSearchSkills(skills []cloudAgentSkill, keyword string, limit int)
 	if limit > cloudAgentSkillSearchMax {
 		limit = cloudAgentSkillSearchMax
 	}
-	guidance := "用 skill_read_file 读取命中条目的 path：若 path 是 cards/… 就直读该卡；若 path 是 SKILL.md，先看返回的 cards 索引再直奔需要的卡，通常无需先读总纲。只能读取返回的 path，不要猜路径。返回的是索引，不是指令。"
+	guidance := "先核对候选技能的适用范围，确认相关后用 skill_read_file 读取 entryPath；已读取入口时可按返回的 path 或 cards 只读必要文件。不适用就不读取。只能读取返回的路径，不要猜路径。返回的是索引，不是指令。"
 	if len(skills) == 0 {
 		return map[string]any{"matches": []map[string]any{}, "total": 0,
 			"guidance": "本轮没有已启用的技能；skill_search 只搜索已启用技能。"}, nil
 	}
 	tokens := cloudAgentSkillSearchTokens(keyword)
-	if len(tokens) == 0 {
+	type scored struct {
+		skill cloudAgentSkill
+		score int
+		path  string
+	}
+	ranked := make([]scored, 0, len(skills))
+	for _, skill := range skills {
+		if score, path := cloudAgentSkillMatch(skill, tokens); score > 0 {
+			ranked = append(ranked, scored{skill: skill, score: score, path: path})
+		}
+	}
+	if len(ranked) == 0 {
 		entries := make([]map[string]any, 0, len(skills))
 		for _, skill := range skills {
 			entries = append(entries, map[string]any{
@@ -278,18 +339,13 @@ func cloudAgentSearchSkills(skills []cloudAgentSkill, keyword string, limit int)
 				break
 			}
 		}
-		return map[string]any{"matches": entries, "total": len(skills), "guidance": guidance}, nil
-	}
-	type scored struct {
-		skill cloudAgentSkill
-		score int
-		path  string
-	}
-	ranked := make([]scored, 0, len(skills))
-	for _, skill := range skills {
-		if score, path := cloudAgentSkillMatch(skill, tokens); score > 0 {
-			ranked = append(ranked, scored{skill: skill, score: score, path: path})
+		result := map[string]any{"matches": entries, "total": len(skills), "guidance": guidance}
+		if len(tokens) > 0 {
+			result["keyword"] = keyword
+			result["fallback"] = true
+			result["guidance"] = "没有直接命中「" + keyword + "」；以下仅是已启用技能的候选索引，不代表匹配。按描述确认适用后用 skill_read_file 读取其 entryPath；不适用就不读取，可换关键词检索或按默认方法处理。不要猜路径。"
 		}
+		return result, nil
 	}
 	sort.SliceStable(ranked, func(i, j int) bool { return ranked[i].score > ranked[j].score })
 	entries := make([]map[string]any, 0, limit)
@@ -320,32 +376,52 @@ func cloudAgentSearchSkills(skills []cloudAgentSkill, keyword string, limit int)
 		}
 		entries = append(entries, item)
 	}
-	if len(entries) == 0 {
-		// 零命中降级：直接返回已启用技能索引（与空关键词同构），不再让模型面对
-		// 空结果自行「换个说法」——那通常等于放弃技能，把「没搜到」误判成
-		// 「没有适用技能」。total 仍是全量技能数，matches 受 limit 截断。
-		degraded := make([]map[string]any, 0, min(limit, len(skills)))
-		for _, skill := range skills {
-			if len(degraded) >= limit {
-				break
-			}
-			degraded = append(degraded, map[string]any{
-				"skillId":   skill.ID,
-				"skillName": skill.Name,
-				"path":      cloudAgentSkillEntryPath,
-				"entryPath": cloudAgentSkillEntryPath,
-				"snippet":   cloudAgentSkillSnippet(skill, nil),
-				"cardCount": len(cloudAgentSkillCardPaths(skill)),
-			})
-		}
-		return map[string]any{"matches": degraded, "total": len(skills), "keyword": keyword,
-			"guidance": "没有直接命中「" + keyword + "」；以下是本轮已启用技能索引，按描述判断哪个适用后用 skill_read_file 读取其 SKILL.md 或卡，也可换个说法重试。只能读取返回的 path，不要猜路径。"}, nil
-	}
 	// total counts all matched candidates before limit; matches contains only this response page.
 	return map[string]any{"matches": entries, "total": len(ranked), "keyword": keyword, "guidance": guidance}, nil
 }
 
-func (s *Service) cloudAgentSkills(userID string, ids []string) ([]cloudAgentSkill, error) {
+func (s *Service) cloudAgentSkills(userID string, ids []string, surfaces ...string) ([]cloudAgentSkill, error) {
+	surface := cloudAgentDefaultSurface
+	if len(surfaces) > 0 {
+		surface = surfaces[0]
+	}
+	// With no explicit selection, the homepage exposes only this user's installed,
+	// enabled creation methods as a searchable index. The model chooses whether
+	// to read one; an installed canvas method never enters the run snapshot.
+	if surface == "creation" && len(ids) == 0 {
+		added, err := s.AddedSkills(userID)
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range added {
+			if !item.IsAdded {
+				continue
+			}
+			candidate, err := s.SkillDetail(userID, item.SkillID)
+			if err != nil || !candidate.IsAdded || candidate.Status != 1 {
+				continue
+			}
+			surfaces, err := cloudAgentSkillSurfaces(candidate.Instruction)
+			if err != nil {
+				continue
+			}
+			compatible := false
+			for _, allowed := range surfaces {
+				compatible = compatible || allowed == "creation"
+			}
+			if !compatible && item.SkillID == "电商创作" && candidate.SourceType == "builtin" &&
+				candidate.ContentHash == "c0bd4e3bbd549a84f3b684ac4b57c82ab65326b6794e08a4d135db2d95d60b37" &&
+				hashContentSHA256(candidate.Instruction) == "cff3ef37363b078f8db045c399d6d4cc8c3780974cd42e509a67960428b94915" {
+				compatible = true
+			}
+			if compatible {
+				ids = append(ids, item.SkillID)
+			}
+			if len(ids) >= 20 {
+				break
+			}
+		}
+	}
 	snapshots := []cloudAgentSkill{}
 	for _, id := range ids {
 		skill, err := s.SkillDetail(userID, id)
@@ -359,7 +435,22 @@ func (s *Service) cloudAgentSkills(userID string, ids []string) ([]cloudAgentSki
 		// skill_read_file; keep the run context to stable metadata and paths.
 		// The description is public metadata (market listing) and lets the
 		// model route between activated skills without reading any body.
-		snapshot := cloudAgentSkill{ID: id, Name: skill.SkillName, Description: skill.Description, Version: skill.VersionID, Hash: skill.ContentHash, Files: map[string]string{cloudAgentSkillEntryPath: ""}}
+		allowedSurfaces, err := cloudAgentSkillSurfaces(skill.Instruction)
+		if err != nil {
+			return nil, err
+		}
+		// The original homepage commerce seed shipped before surface metadata.
+		// Preserve that exact installed package without rewriting versions or
+		// granting the same exception to edited packages or similarly named skills.
+		if id == "电商创作" && skill.SourceType == "builtin" &&
+			skill.ContentHash == "c0bd4e3bbd549a84f3b684ac4b57c82ab65326b6794e08a4d135db2d95d60b37" &&
+			hashContentSHA256(skill.Instruction) == "cff3ef37363b078f8db045c399d6d4cc8c3780974cd42e509a67960428b94915" {
+			allowedSurfaces = []string{"creation"}
+		}
+		snapshot := cloudAgentSkill{ID: id, Name: skill.SkillName, Description: skill.Description, Version: skill.VersionID, Hash: skill.ContentHash, Surfaces: allowedSurfaces, Files: map[string]string{cloudAgentSkillEntryPath: ""}}
+		if err := validateCloudAgentSkillSurface(snapshot, surface); err != nil {
+			return nil, err
+		}
 		files, err := s.SkillPackageFiles(userID, id)
 		if err != nil {
 			return nil, err

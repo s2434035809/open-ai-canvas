@@ -63,8 +63,16 @@ describe("bounded image geometry", () => {
         }
     });
 
-    test("actual task result projection uses decoded ratio and preserves protected display geometry", async () => {
+    test.each(["browser", "worker"])("actual task result projection preserves decoded and protected geometry in %s", async (environment) => {
         const adapter = apiClient.defaults.adapter;
+        const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+        const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+        if (environment === "browser") {
+            Object.defineProperty(globalThis, "window", { configurable: true, value: { location: new URL("https://fixture.invalid/"), localStorage: { getItem: () => null } } });
+        } else {
+            delete (globalThis as { window?: unknown }).window;
+            delete (globalThis as { document?: unknown }).document;
+        }
         const requests: string[] = [];
         clearResourceAccessCache();
         apiClient.defaults.adapter = async (config) => {
@@ -102,10 +110,15 @@ describe("bounded image geometry", () => {
             expect(unknownSize.width / unknownSize.height).toBeCloseTo(9 / 16);
             expect(unknownSize.metadata?.naturalWidth).toBe(0);
             expect(unknownSize.metadata?.naturalHeight).toBe(0);
-            expect(requests).toEqual(["/resources/access"]);
+            expect(requests).toEqual(environment === "browser" ? ["/resources/access"] : []);
+            expect(unknownSize.metadata?.content).toBe(environment === "browser" ? "/api/resources/image-geometry-test/file" : "/portrait.png");
         } finally {
             apiClient.defaults.adapter = adapter;
             clearResourceAccessCache();
+            if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow);
+            else delete (globalThis as { window?: unknown }).window;
+            if (originalDocument) Object.defineProperty(globalThis, "document", originalDocument);
+            else delete (globalThis as { document?: unknown }).document;
         }
     });
 });

@@ -11,7 +11,9 @@ import (
 	"fmt"
 	"strings"
 
+	"gorm.io/gorm"
 	agenttool "yingce/backend/internal/agent/tool"
+
 	"yingce/backend/internal/model"
 	"yingce/backend/internal/repository"
 )
@@ -122,6 +124,12 @@ func cloudAgentToolResult(runID string, state *cloudAgentRuntime, call cloudAgen
 		payload["text"] = "工具执行成功"
 	}
 	if inspection, ok := result.(cloudAgentImageInspection); ok && err == nil {
+		if state.PiModelTaskID != "" && inspection.ImageURL != "" {
+			if state.PiInspectedImages == nil {
+				state.PiInspectedImages = map[string]cloudAgentImageInspection{}
+			}
+			state.PiInspectedImages[call.ID] = inspection
+		}
 		receipt, _ := json.Marshal(inspection.Receipt)
 		payload["result"] = inspection.Receipt
 		state.event(runID, kind, payload)
@@ -411,7 +419,7 @@ func (s *Service) advanceCloudAgentReadBatch(run *model.CloudAgentExecution, sta
 
 	s.storageMu.Lock()
 	defer s.storageMu.Unlock()
-	err := s.repo.MutateCloudAgent(run.UserID, run.ID, run.Revision, func(current *model.CloudAgentExecution, _ *repository.Repository) error {
+	err := s.repo.MutateCloudAgentRun(run, func(current *model.CloudAgentExecution, _ *repository.Repository) error {
 		for _, item := range outcomes {
 			var readLoopErr *cloudAgentReadLoopError
 			if errors.As(item.err, &readLoopErr) {
@@ -437,6 +445,12 @@ func (s *Service) advanceCloudAgentReadBatch(run *model.CloudAgentExecution, sta
 }
 
 func (s *Service) advanceCloudAgentTool(run *model.CloudAgentExecution, state *cloudAgentRuntime) error {
+	return s.advanceCloudAgentApprovalTool(run, state, false)
+}
+
+// advanceCloudAgentApprovalTool 执行当前调用；continuing 表示批准后接续同批的下一个审批调用，
+// 此时准入失败只记录为该调用的工具错误，不终止整轮运行。
+func (s *Service) advanceCloudAgentApprovalTool(run *model.CloudAgentExecution, state *cloudAgentRuntime, continuing bool) error {
 	if run == nil || state == nil || (run.Status != "running" && run.Status != "queued") {
 		return nil
 	}
@@ -444,6 +458,12 @@ func (s *Service) advanceCloudAgentTool(run *model.CloudAgentExecution, state *c
 		return s.failCloudAgent(run, state, "Agent 工具调用状态无效，本轮已停止")
 	}
 	call := state.Calls[state.CallIndex]
+	mediaAdmissionError := func(err error) error {
+		if continuing {
+			return s.recordCloudAgentQueuedApprovalError(run, state, err)
+		}
+		return s.cloudAgentMediaError(run, state, "admission", false, false, err)
+	}
 	call = s.cloudAgentRefreshStepSnapshotHash(run, state, call)
 	state.Calls[state.CallIndex] = call
 	if state.Approval != nil && state.Approval.Decision == "" {
@@ -455,6 +475,45 @@ func (s *Service) advanceCloudAgentTool(run *model.CloudAgentExecution, state *c
 	allowed := cloudAgentToolAllowed(state.Request, call.Function.Name)
 	binding, _ := cloudAgentRegistry().Lookup(call.Function.Name)
 	toolPolicy := agenttool.Of(call.Function.Name)
+	mediaTool := cloudAgentMediaTool(call.Function.Name)
+	// 创作入口的电商计划与批量生成有独立的授权、报价与恢复链，
+	// 必须在通用审批与媒体管道之前分派。
+	if allowed && state.Request.Surface == "creation" && state.Request.PermissionMode != "read_only" &&
+		(call.Function.Name == agenttool.CommercePlanSubmit ||
+			call.Function.Name == agenttool.CommercePlanWait ||
+			call.Function.Name == agenttool.GenerateImageBatch) {
+		return s.advanceCloudAgentCommercePlan(run, state, call)
+	}
+	if allowed && mediaTool && state.MediaTaskID != "" {
+		return s.advanceCloudAgentMedia(run, state, cloudAgentMediaCall(call))
+	}
+	if allowed && call.Function.Name == agenttool.GenerateMedia && state.Request.Surface == "creation" && state.CommercePlan != nil && state.MediaTaskID == "" {
+		_, identity, err := s.cloudAgentResolvedMediaCall(run.UserID, state, call)
+		if err != nil {
+			return s.cloudAgentMediaError(run, state, "admission", false, false, err)
+		}
+		existing, err := s.repo.TaskForUser(run.UserID, identity.TaskID)
+		if err == nil {
+			matches := cloudAgentCommerceTaskMatches(existing, state.CommercePlan, identity.ItemID)
+			if identity.RetryFailedTaskID != "" {
+				matches = cloudAgentCommerceRetryTaskMatches(existing, run.UserID, state, identity)
+			}
+			if !matches {
+				return s.cloudAgentMediaError(run, state, "admission", false, false, creationConflict("计划交付项已有不同版本任务；不能重复收费生成"))
+			}
+			return s.mutateCloudAgentTool(run, state, func(current *model.CloudAgentExecution, _ *repository.Repository) error {
+				state.event(run.ID, "generation_task_reused", map[string]any{"taskId": existing.ID, "status": existing.Status, "planId": state.CommercePlan.PlanID, "text": "计划交付项已有生成任务，已恢复原任务状态"})
+				cloudAgentToolResult(run.ID, state, call, map[string]any{"taskId": existing.ID, "status": existing.Status, "taskSubmitted": true, "reused": true}, nil)
+				return cloudAgentSave(current, state)
+			})
+		}
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		if err := cloudAgentCommerceDependenciesReady(s.repo, run.UserID, state, identity.ItemID); err != nil {
+			return s.cloudAgentMediaError(run, state, "admission", false, false, err)
+		}
+	}
 	// 媒体工具在所有模式下都进入审批；其他写入只在 request_approval 下审批。
 	if allowed && toolPolicy.ApprovalRequired(state.Request.PermissionMode) && state.Approval == nil {
 		var plan *cloudAgentMediaPlan
@@ -466,66 +525,145 @@ func (s *Service) advanceCloudAgentTool(run *model.CloudAgentExecution, state *c
 		if err != nil {
 			return s.terminateCloudAgent(run, "Agent 运行策略不可用，本轮已停止")
 		}
-		if cloudAgentMediaTool(call.Function.Name) {
-			mediaCall := cloudAgentMediaCall(call)
-			req, prepared, err := s.prepareCloudAgentMedia(run, state, mediaCall)
+		if mediaTool {
+			mediaCall, identity, err := s.cloudAgentResolvedMediaCall(run.UserID, state, call)
 			if err != nil {
 				return s.cloudAgentMediaError(run, state, "admission", false, false, err)
 			}
+			req, prepared, err := s.prepareCloudAgentMedia(run, state, mediaCall)
+			if err != nil {
+				return mediaAdmissionError(err)
+			}
 			mediaRequest, plan = req, prepared
+			plan.CommerceKey = identity.TaskID
+			plan.CommerceItemID = identity.ItemID
+			plan.CommerceRetryFailedTaskID = identity.RetryFailedTaskID
+			plan.CommerceRetryPromptHash = identity.RetryPromptHash
 			// A durable auto checkpoint already contains the exact admitted input and
 			// quote. Reusing it avoids a second dry admission after a worker restart.
 			if plan.Prepared == nil {
 				// Dry admission validates the selected model and prompt limits without a task or charge.
 				mediaPreparation = &creationTaskPreparation{}
 				req.creationPrepare = mediaPreparation
-				preparedTask, err = s.CreateTask(run.UserID, req)
+				preparedTask, err = s.prepareCloudAgentPreferredMedia(run, state, &req, prepared, 0)
 				if err != nil {
-					return s.cloudAgentMediaError(run, state, "admission", false, false, err)
+					return mediaAdmissionError(err)
 				}
 				// Resolve model-owned defaults once during the dry admission. Both the
 				// eventual task and the canvas draft must use this exact resolved input;
 				// otherwise auto mode reports a false tool failure for omitted size or
 				// duration and makes the model spend another turn repairing its own call.
 				if err := s.applyCloudAgentResolvedMediaDefaults(&req, prepared, preparedTask); err != nil {
-					return s.cloudAgentMediaError(run, state, "admission", false, false, err)
+					return mediaAdmissionError(err)
 				}
 				if err := validateCloudAgentMediaBudget(prepared.Args, state); err != nil {
-					return s.cloudAgentMediaError(run, state, "admission", false, false, err)
+					return mediaAdmissionError(err)
 				}
 				mediaRequest, plan = req, prepared
 			}
 			modelName, err = s.cloudAgentMediaModelName(plan.Args)
 			if err != nil {
-				return s.cloudAgentMediaError(run, state, "admission", false, false, err)
+				return mediaAdmissionError(err)
 			}
 		}
-
+		autoRepair := false
+		if plan != nil && plan.CommerceRetryFailedTaskID != "" {
+			autoRepair, err = s.cloudAgentCommerceAutoImageRetry(run, state, plan.CommerceItemID, plan.CommerceRetryFailedTaskID, plan.CommerceRetryPromptHash)
+			if err != nil {
+				return err
+			}
+		}
+		if plan != nil &&
+			state.Request.Surface == "creation" &&
+			call.Function.Name == agenttool.GenerateMedia &&
+			((state.Request.PermissionMode == "auto" && plan.CommerceRetryFailedTaskID == "") || autoRepair) {
+			if plan.Prepared != nil {
+				// The draft and quote were already checkpointed. Reuse them after a
+				// worker restart instead of dry-admitting and mutating the canvas again.
+				latest, err := s.reloadCloudAgent(run)
+				if err != nil {
+					return err
+				}
+				fresh, err := cloudAgentDecode(latest)
+				if err != nil {
+					return err
+				}
+				return s.enqueueCloudAgentTask(latest, &fresh, mediaRequest, plan)
+			}
+			// Auto media is a direct, server-admitted write. Prepare the draft and
+			// its immutable quote in one checkpoint transaction, then release the
+			// lock before enqueueCloudAgentTask performs the billed submission.
+			s.storageMu.Lock()
+			err := s.mutateCloudAgentTool(run, state, func(current *model.CloudAgentExecution, repo *repository.Repository) error {
+				var order *model.BillingOrder
+				if mediaPreparation != nil {
+					order = mediaPreparation.Order
+				}
+				preparedMedia, err := prepareCloudAgentMediaApproval(repo, run.UserID, cloudAgentCreationMediaDocument(), plan, mediaRequest, preparedTask, order)
+				if err != nil {
+					return err
+				}
+				plan.Prepared = preparedMedia
+				state.AutoPreparedMedia = preparedMedia
+				state.AutoPreparedCallHash = cloudAgentApprovalCallHash(call)
+				return cloudAgentSave(current, state)
+			})
+			s.storageMu.Unlock()
+			if err != nil {
+				latest, readErr := s.reloadCloudAgent(run)
+				if readErr != nil || latest.Revision != run.Revision {
+					return err
+				}
+				fresh, decodeErr := cloudAgentDecode(latest)
+				if decodeErr != nil {
+					return decodeErr
+				}
+				return s.cloudAgentMediaError(latest, &fresh, "admission", false, false, err)
+			}
+			latest, err := s.reloadCloudAgent(run)
+			if err != nil {
+				return err
+			}
+			fresh, err := cloudAgentDecode(latest)
+			if err != nil {
+				return err
+			}
+			return s.enqueueCloudAgentTask(latest, &fresh, mediaRequest, plan)
+		}
 		s.storageMu.Lock()
 		defer s.storageMu.Unlock()
-		return s.repo.MutateCloudAgent(run.UserID, run.ID, run.Revision, func(current *model.CloudAgentExecution, repo *repository.Repository) error {
+		return s.mutateCloudAgentTool(run, state, func(current *model.CloudAgentExecution, repo *repository.Repository) error {
 			var preview cloudAgentApprovalPreview
 			var preparedMedia *cloudAgentPreparedMedia
 			if plan != nil {
-				if err := createCloudAgentMediaNode(repo, run.UserID, state.Request.CanvasID, plan, nil, policy, cloudAgentCanvasEventRecorder(run.ID, state)); err != nil {
-					return err
+				doc := cloudAgentCreationMediaDocument()
+				if state.Request.Surface != "creation" {
+					if err := createCloudAgentMediaNode(repo, run.UserID, state.Request.CanvasID, plan, nil, policy, cloudAgentCanvasEventRecorder(run.ID, state)); err != nil {
+						return err
+					}
+					canvas, err := repo.CanvasProjectForUser(run.UserID, state.Request.CanvasID)
+					if err != nil {
+						return err
+					}
+					doc, err = creationDocument(canvas.PayloadJSON)
+					if err != nil {
+						return err
+					}
+					plan.Args.SnapshotHash = cloudAgentMediaContentHash(doc)
+					raw, err := json.Marshal(plan.Args)
+					if err != nil {
+						return err
+					}
+					call.Function.Arguments = string(raw)
+					state.Calls[state.CallIndex] = call
 				}
-				canvas, err := repo.CanvasProjectForUser(run.UserID, state.Request.CanvasID)
-				if err != nil {
-					return err
-				}
-				doc, err := creationDocument(canvas.PayloadJSON)
-				if err != nil {
-					return err
-				}
-				plan.Args.SnapshotHash = cloudAgentMediaContentHash(doc)
-				raw, err := json.Marshal(plan.Args)
-				if err != nil {
-					return err
-				}
-				call.Function.Arguments = string(raw)
-				state.Calls[state.CallIndex] = call
 				preview = cloudAgentMediaApprovalPreview(plan, modelName)
+				if state.Request.Surface == "creation" {
+					preview.Description = "媒体任务已完成模型能力、参考资源、报价与预算校验；批准后才提交收费生成，结果保存在任务中心。"
+					if plan.CommerceRetryFailedTaskID != "" {
+						preview.Description = "已核对该计划交付项的原任务失败。此次是独立重试，已重新校验模型能力、参考资源、报价与预算；批准后才提交新的收费任务，原任务记录和成功产物保留。"
+					}
+				}
 				preparedMedia, err = prepareCloudAgentMediaApproval(repo, run.UserID, doc, plan, mediaRequest, preparedTask, mediaPreparation.Order)
 				if err != nil {
 					return err
@@ -544,6 +682,10 @@ func (s *Service) advanceCloudAgentTool(run *model.CloudAgentExecution, state *c
 					}
 					var appErr *AppError
 					if errors.As(mutationErr, &appErr) && appErr != nil {
+						if continuing {
+							cloudAgentRecordToolResult(current, state, call, nil, mutationErr)
+							return cloudAgentSave(current, state)
+						}
 						return failCloudAgentAdmission(current, state, run.ID, mutationErr)
 					}
 					return mutationErr
@@ -565,7 +707,7 @@ func (s *Service) advanceCloudAgentTool(run *model.CloudAgentExecution, state *c
 	}
 	if allowed && call.Function.Name == agenttool.PlanUpdate && cloudAgentPlanRequiresFirstApproval(state, call) {
 		if preview, ok := cloudAgentPlanApprovalPreview(call); ok {
-			return s.repo.MutateCloudAgent(run.UserID, run.ID, run.Revision, func(current *model.CloudAgentExecution, _ *repository.Repository) error {
+			return s.repo.MutateCloudAgentRun(run, func(current *model.CloudAgentExecution, _ *repository.Repository) error {
 				approvalID := fmt.Sprintf("%s-%d-%d", run.ID, state.Step, state.CallIndex)
 				state.Approval = &cloudAgentApproval{ID: approvalID, Call: call, CallHash: cloudAgentApprovalCallHash(call), Preview: preview}
 				state.PiResumePrompt = ""
@@ -606,15 +748,14 @@ func (s *Service) advanceCloudAgentTool(run *model.CloudAgentExecution, state *c
 		if !toolPolicy.ReadOnly() {
 			skillResult, skillErr = cloudAgentReadTool(s.repo, run.UserID, state, call, s)
 		} else {
-			// 技能文件和模型目录都是稳定的只读结果。统一走检查点缓存，
-			// 使重复调用不会再次访问文件系统/数据库，也不会把大结果重复
-			// 写入后续模型上下文。
+			// 稳定的技能和模型读取复用检查点缓存；task_get 不缓存，
+			// 每次刷新真实任务状态并沿用同一只读调用预算。
 			skillResult, skillErr = cloudAgentReadToolCached(s.repo, run.UserID, state, call, s)
 		}
 	}
 	s.storageMu.Lock()
 	defer s.storageMu.Unlock()
-	return s.repo.MutateCloudAgent(run.UserID, run.ID, run.Revision, func(current *model.CloudAgentExecution, repo *repository.Repository) error {
+	return s.mutateCloudAgentTool(run, state, func(current *model.CloudAgentExecution, repo *repository.Repository) error {
 		var result any
 		var toolErr error
 		switch {
@@ -626,6 +767,10 @@ func (s *Service) advanceCloudAgentTool(run *model.CloudAgentExecution, state *c
 			} else {
 				toolErr = BadAuthRequest("工具未获本轮权限授权")
 			}
+		// 只读模式的电商计划提交只保存完整方案，不报价也不建任务，因此必须在
+		// 写工具拦截之前处理；非只读调用已由 advanceCloudAgentCommercePlan 接管。
+		case call.Function.Name == agenttool.CommercePlanSubmit && state.Request.PermissionMode == "read_only":
+			result, toolErr = cloudAgentSaveCommercePlan(repo, run, state, call)
 		case binding.Handler.Write != nil:
 			result, toolErr = binding.Handler.Write(repo, run.UserID, state.Request.CanvasID, call, policy, cloudAgentCanvasEventRecorder(run.ID, state))
 		case binding.Handler.Pipeline == cloudAgentToolVision:
@@ -644,6 +789,8 @@ func (s *Service) advanceCloudAgentTool(run *model.CloudAgentExecution, state *c
 					}
 				}
 			}
+		case call.Function.Name == agenttool.CommercePlanSubmit:
+			result, toolErr = cloudAgentSaveCommercePlan(repo, run, state, call)
 		case toolPolicy.OutsideTransaction:
 			result, toolErr = skillResult, skillErr
 		default:

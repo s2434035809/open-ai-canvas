@@ -21,14 +21,30 @@ import (
 
 const cloudAgentCompactionSummarySystemPromptPrefix = "You are a context summarization assistant."
 
+type cloudAgentPiModelContextKey struct{}
+type cloudAgentPiModelContext struct {
+	Purpose                 string
+	SystemPrompt            string
+	CurrentTurnContextIndex int
+}
+
+func cloudAgentPiModelOperation(ctx context.Context) string {
+	options, _ := ctx.Value(cloudAgentPiModelContextKey{}).(cloudAgentPiModelContext)
+	if options.Purpose == "compaction" {
+		return cloudAgentContextCompactionOperation
+	}
+	return cloudAgentStepOperation
+}
+
 type cloudAgentPiModelRequest struct {
-	ModelID       string                    `json:"modelId"`
-	SystemPrompt  string                    `json:"systemPrompt"`
-	Messages      []map[string]any          `json:"messages"`
-	Tools         []map[string]any          `json:"tools"`
-	ThinkingLevel string                    `json:"thinkingLevel"`
-	Purpose       string                    `json:"purpose"`
-	ContextUsage  *cloudAgentPiContextUsage `json:"contextUsage"`
+	ModelID                 string                    `json:"modelId"`
+	SystemPrompt            string                    `json:"systemPrompt"`
+	Messages                []map[string]any          `json:"messages"`
+	Tools                   []map[string]any          `json:"tools"`
+	ThinkingLevel           string                    `json:"thinkingLevel"`
+	Purpose                 string                    `json:"purpose"`
+	ContextUsage            *cloudAgentPiContextUsage `json:"contextUsage"`
+	CurrentTurnContextIndex *int                      `json:"currentTurnContextIndex"`
 }
 
 // cloudAgentPiContextUsage 是 Pi SDK 对当前会话上下文的原生读数。
@@ -40,46 +56,56 @@ type cloudAgentPiContextUsage struct {
 	Percent       *float64 `json:"percent"`
 }
 
-func (s *Service) validateCloudAgentPiModelRequest(userID, runID string, request cloudAgentPiModelRequest) (bool, error) {
-	compactionSummary := cloudAgentPiCompactionSummaryRequest(request.Messages)
+// cloudAgentPiNormalizedPurpose 归一化模型步骤类型。压缩步骤由 purpose 显式声明，
+// 不再依赖消息正文里是否带摘要提示词前缀：运行时把摘要指令放在 systemPrompt 字段里。
+func cloudAgentPiNormalizedPurpose(request cloudAgentPiModelRequest) (string, bool, error) {
 	purpose := strings.TrimSpace(request.Purpose)
+	legacyCompaction := cloudAgentPiCompactionSummaryRequest(request.Messages)
 	switch purpose {
-	case "":
-		if compactionSummary {
-			purpose = "compaction"
-		} else {
-			purpose = "conversation"
-		}
-	case "conversation":
-		if compactionSummary {
-			return false, errors.New("普通 Agent 模型请求不能携带压缩摘要上下文")
-		}
 	case "compaction":
-		if !compactionSummary {
-			return false, errors.New("压缩模型请求缺少压缩摘要系统提示")
+		if strings.TrimSpace(request.SystemPrompt) == "" {
+			return "", false, errors.New("压缩模型请求缺少压缩摘要系统提示")
 		}
+		if len(request.Tools) > 0 {
+			return "", false, errors.New("压缩模型请求不得携带 Agent 工具")
+		}
+		return "compaction", true, nil
+	case "conversation", "dialogue":
+		if legacyCompaction {
+			return "", false, errors.New("普通 Agent 模型请求不能携带压缩摘要上下文")
+		}
+		return "dialogue", false, nil
+	case "":
+		if legacyCompaction {
+			return "compaction", true, nil
+		}
+		return "dialogue", false, nil
 	default:
-		return false, fmt.Errorf("未知的 Pi 模型请求 purpose: %s", purpose)
+		return "", false, fmt.Errorf("未知的 Pi 模型请求 purpose: %s", purpose)
 	}
-	if purpose == "compaction" && len(request.Tools) > 0 {
-		return false, errors.New("压缩模型请求不得携带 Agent 工具")
+}
+
+func (s *Service) validateCloudAgentPiModelRequest(userID, runID string, request cloudAgentPiModelRequest) (string, error) {
+	purpose, _, err := cloudAgentPiNormalizedPurpose(request)
+	if err != nil {
+		return "", err
 	}
 	if strings.TrimSpace(request.ModelID) == "" {
-		return compactionSummary, nil
+		return purpose, nil
 	}
 	run, err := s.repo.CloudAgent(userID, runID)
 	if err != nil {
-		return false, err
+		return "", err
 	}
 	state, err := cloudAgentDecode(run)
 	if err != nil {
-		return false, err
+		return "", err
 	}
 	expected := strings.TrimSpace(firstNonEmpty(state.Request.ChannelModelKey, state.Request.Model))
 	if expected != "" && request.ModelID != expected {
-		return false, fmt.Errorf("Pi 模型标识与运行配置不一致: got %q, want %q", request.ModelID, expected)
+		return "", fmt.Errorf("Pi 模型标识与运行配置不一致: got %q, want %q", request.ModelID, expected)
 	}
-	return compactionSummary, nil
+	return purpose, nil
 }
 
 // cloudAgentPiModel 模型调用桥接
@@ -88,13 +114,37 @@ func (s *Service) cloudAgentPiModel(ctx context.Context, userID, runID string, p
 	if err := decodePiPayload(payload, &request); err != nil {
 		return nil, err
 	}
-	compactionSummary, err := s.validateCloudAgentPiModelRequest(userID, runID, request)
+	purpose, err := s.validateCloudAgentPiModelRequest(userID, runID, request)
 	if err != nil {
 		return nil, err
 	}
+	compactionSummary := purpose == "compaction"
 	if len(request.Messages) == 0 {
 		return nil, fmt.Errorf("no messages")
 	}
+	// 创建态的视觉上下文位置由运行时给出：模型步要据此判断哪条 user 消息
+	// 是当前轮的图片与文本，服务端不接受缺失或指向非 user 消息的索引。
+	currentTurnIndex := -1
+	if !compactionSummary {
+		run, runErr := s.repo.CloudAgent(userID, runID)
+		if runErr != nil {
+			return nil, runErr
+		}
+		state, stateErr := cloudAgentDecodeForExecution(run)
+		if stateErr != nil {
+			return nil, stateErr
+		}
+		if state.Request.Surface == "creation" && !compactionSummary {
+			if request.CurrentTurnContextIndex == nil || *request.CurrentTurnContextIndex < -1 || *request.CurrentTurnContextIndex >= len(request.Messages) ||
+				(*request.CurrentTurnContextIndex >= 0 && stringField(request.Messages[*request.CurrentTurnContextIndex], "role") != "user") {
+				return nil, BadAuthRequest("Agent 运行时缺少有效视觉上下文位置，请同步更新后端与独立 Agent")
+			}
+			currentTurnIndex = *request.CurrentTurnContextIndex
+		}
+	}
+	ctx = context.WithValue(ctx, cloudAgentPiModelContextKey{}, cloudAgentPiModelContext{
+		Purpose: purpose, SystemPrompt: request.SystemPrompt, CurrentTurnContextIndex: currentTurnIndex,
+	})
 	if !compactionSummary {
 		if err := s.broadcastCloudAgentPiContextPressure(userID, runID, request.ContextUsage); err != nil {
 			return nil, err
@@ -185,7 +235,8 @@ func (e *cloudAgentPiOutputLimitError) Error() string {
 
 // runCloudAgentModelStep 调度并等待一次模型步骤；第二个返回值表示失败是否值得重试。
 func (s *Service) runCloudAgentModelStep(ctx context.Context, userID, runID string, messages []map[string]any, thinkingLevel string, correction ...map[string]any) (any, bool, error) {
-	compactionSummary := cloudAgentPiCompactionSummaryRequest(messages)
+	operation := cloudAgentPiModelOperation(ctx)
+	compactionSummary := operation == cloudAgentContextCompactionOperation
 	// 运行时发起 /model 的同时会并发推送事件（message_start、session_snapshot 等），
 	// 这些事件也会推进运行 revision。调度模型步骤是 CAS 写入：冲突时重新读取
 	// 最新状态再调度，而不是把整轮判失败。冲突时事务整体回滚，不会产生任务或扣费。
@@ -244,9 +295,44 @@ func (s *Service) runCloudAgentModelStep(ctx context.Context, userID, runID stri
 			continue
 		}
 
-		canonical, historyErr := cloudAgentPiCanonicalForModelRequest(messages, state.Canonical)
+		modelContext, hasModelContext := ctx.Value(cloudAgentPiModelContextKey{}).(cloudAgentPiModelContext)
+		var turnContextIndex []int
+		if hasModelContext && operation != cloudAgentContextCompactionOperation && state.Request.Surface == "creation" {
+			turnContextIndex = []int{modelContext.CurrentTurnContextIndex}
+		}
+		var canonical canonicalAgentRequest
+		var historyErr error
+		if compactionSummary {
+			// 压缩摘要使用运行时给出的专用摘要指令，与普通会话历史完全隔离：
+			// 不带工具、不继承会话 system prompt，也不写回 canonical 历史。
+			canonical, historyErr = canonicalFromRuntimeMessages(messages, nil, modelContext.SystemPrompt)
+		} else {
+			canonical, historyErr = cloudAgentPiCanonicalForModelRequest(messages, state.Canonical, turnContextIndex...)
+		}
 		if historyErr != nil {
 			return nil, false, historyErr
+		}
+		if !compactionSummary {
+			canonical.Messages, historyErr = s.repairCloudAgentPiMissingResults(run, &state, canonical.Messages)
+			if historyErr != nil {
+				return nil, false, historyErr
+			}
+			if err := validateCanonicalAgentHistory(&canonical, false); err != nil {
+				return nil, false, err
+			}
+		}
+		// 首页创作轮的图片像素只能来自当前轮授权附件；这里按原生分支位置挂载，
+		// 不能凭元数据或历史送达记录揣测画面内容。
+		var creationImages []providerMedia
+		if !compactionSummary && state.Request.Surface == "creation" {
+			referenceRequest, referenceErr := cloudAgentCreationRequestWithOutputs(s.repo, userID, &state)
+			if referenceErr != nil {
+				return nil, false, referenceErr
+			}
+			creationImages, err = s.attachCloudAgentCreationImages(userID, referenceRequest, &canonical, &state)
+			if err != nil {
+				return nil, false, err
+			}
 		}
 		softReadGuard := state.ReadLoopNudge && !compactionSummary
 		softReadToolName, softReadCount := state.ReadLoopToolName, state.ReadLoopCount
@@ -257,7 +343,12 @@ func (s *Service) runCloudAgentModelStep(ctx context.Context, userID, runID stri
 		// 入队这次 CAS 写入里（出队、canonical 追加与 delivered 事件同批落库），
 		// 冲突重试时从最新状态重新出队，不会重复送达。压缩摘要请求不参与。
 		if !compactionSummary {
+			// 动态召回的记忆只服务本次请求，不能进入持久化 canonical 历史。
+			canonical.Messages = cloudAgentWithoutMemoryMessages(canonical.Messages)
 			state.Canonical = canonical
+			for _, call := range state.PiModelCalls {
+				cloudAgentCompactSupersededReadResult(&state, call)
+			}
 			cloudAgentRestoreInterjectionSources(&state)
 			steeringMessages = cloudAgentPiDeliverInterjections(runID, &state)
 			canonical = state.Canonical
@@ -271,22 +362,31 @@ func (s *Service) runCloudAgentModelStep(ctx context.Context, userID, runID stri
 			cloudAgentApplyReadLoopNudge(&canonical, &state)
 		}
 		if !compactionSummary {
-			s.attachCloudAgentLessons(&canonical, userID, cloudAgentLessonTaskText(&state))
+			s.attachCloudAgentLessons(&canonical, userID, cloudAgentLessonTaskText(&state), state.Request.Surface)
 			budget := s.cloudAgentContextBudgetForRequest(state.Request)
 			if err := fitCloudAgentModelContext(&canonical, budget.InputBudgetTokens); err != nil {
 				return nil, false, err
 			}
 		}
-		// 看图后的历史里有 resource: 图片占位，必须随请求带上获准图片清单，
-		// 否则预检以「模型协议引用了未获准的图片」拒绝（见 cloud_agent_pi_image_references.go）。
-		references, refErr := s.cloudAgentPiStepImageReferences(userID, state.Request, &canonical)
-		if refErr != nil {
-			return nil, false, refErr
+		references := creationImages
+		if !compactionSummary && state.Request.Surface != "creation" {
+			// 看图后的历史里有 resource: 图片占位，必须随请求带上获准图片清单，
+			// 否则预检以「模型协议引用了未获准的图片」拒绝（见 cloud_agent_pi_image_references.go）。
+			cloudAgentPiAttachInspectedImages(&state, &canonical)
+			var refErr error
+			references, refErr = s.cloudAgentPiStepImageReferences(userID, state.Request, &canonical)
+			if refErr != nil {
+				return nil, false, refErr
+			}
+		}
+		if !compactionSummary {
+			canonical.Tools = cloudAgentCreationModelTools(&state, canonical.Tools)
 		}
 		input := map[string]any{
 			"mode":          "text",
 			"prompt":        state.Request.Prompt,
 			"agentRequests": map[string]any{"canonical": canonical},
+			"metadata":      map[string]any{"agentSurface": state.Request.Surface},
 			"config": map[string]any{
 				"channelId":       state.Request.ChannelID,
 				"channelModelKey": state.Request.ChannelModelKey,
@@ -305,7 +405,7 @@ func (s *Service) runCloudAgentModelStep(ctx context.Context, userID, runID stri
 			ProjectID: state.Request.CanvasID,
 			Type:      "canvas_text",
 			// Operation: cloudAgentStepOperation
-			Operation:      cloudAgentStepOperation,
+			Operation:      operation,
 			Prompt:         state.Request.Prompt,
 			Model:          firstNonEmpty(state.Request.ChannelModelKey, state.Request.Model),
 			LogicalModelID: state.Request.LogicalModelID,
@@ -422,7 +522,7 @@ func (s *Service) adoptCloudAgentPiModelStep(userID, runID, taskID string) (adop
 	if err != nil {
 		return false, false, err
 	}
-	if task.Operation != cloudAgentStepOperation {
+	if task.Operation != cloudAgentStepOperation && task.Operation != cloudAgentContextCompactionOperation {
 		return false, false, nil
 	}
 	switch task.Status {
@@ -437,7 +537,7 @@ func (s *Service) adoptCloudAgentPiModelStep(userID, runID, taskID string) (adop
 	return false, false, nil
 }
 
-func cloudAgentPiCanonicalForModelRequest(messages []map[string]any, existing canonicalAgentRequest) (canonicalAgentRequest, error) {
+func cloudAgentPiCanonicalForModelRequest(messages []map[string]any, existing canonicalAgentRequest, currentTurnContextIndex ...int) (canonicalAgentRequest, error) {
 	compactionSummaryRequest := cloudAgentPiCompactionSummaryRequest(messages)
 	if !compactionSummaryRequest {
 		// 审批暂停会留下没有结果的并行工具调用，先补齐再转换（见 cloud_agent_pi_unanswered_calls.go）。
@@ -447,7 +547,7 @@ func cloudAgentPiCanonicalForModelRequest(messages []map[string]any, existing ca
 	if compactionSummaryRequest {
 		tools, systemPrompt = nil, ""
 	}
-	canonical, conversionErr := canonicalFromRuntimeMessages(messages, tools, systemPrompt)
+	canonical, conversionErr := canonicalFromRuntimeMessages(messages, tools, systemPrompt, currentTurnContextIndex...)
 	if conversionErr != nil {
 		return canonicalAgentRequest{}, conversionErr
 	}
@@ -458,12 +558,6 @@ func cloudAgentPiCanonicalForModelRequest(messages []map[string]any, existing ca
 		if len(existing.Messages) == 0 {
 			return canonicalAgentRequest{}, err
 		}
-		existing.Messages = repairCanonicalUnansweredCalls(existing.Messages)
-		return existing, nil
-	}
-	// A projected Pi transcript containing a compaction summary is authoritative,
-	// even though it is shorter than the server's pre-compaction canonical history.
-	if !cloudAgentPiHasCompactionSummary(messages) && len(existing.Messages) > len(messages) {
 		existing.Messages = repairCanonicalUnansweredCalls(existing.Messages)
 		return existing, nil
 	}
@@ -517,13 +611,25 @@ func cloudAgentTransientModelFailure(call model.ApiCallLog) bool {
 	return false
 }
 
-// cloudAgentModelTaskRetryable 按上游真实 HTTP 状态和结构化业务错误判断失败是否是临时性的：
-// 5xx、429、408、明确的临时业务错误和没有拿到任何响应的网络错误可以重试；
-// 参数、鉴权、模型不存在和内容审核错误不会重试。
+// cloudAgentModelTaskRetryable 先后排除已受理或提交结果未知的步骤，再按上游真实 HTTP
+// 状态和结构化业务错误判断失败是否是临时性的：5xx、429、408、明确的临时业务错误和
+// 没有拿到任何响应的网络错误可以重试；参数、鉴权、模型不存在和内容审核错误不会重试。
+// HTTP 状态本身不能证明可以安全重发：已受理或结果未知的上游请求重试会重复计费或
+// 重复执行，因此这两类一律不重试。
 func (s *Service) cloudAgentModelTaskRetryable(taskID string) bool {
 	task, err := s.repo.Task(taskID)
 	if err != nil || task == nil || task.Status == model.TaskStatusSucceeded || task.Status == model.TaskStatusCancelled {
 		return false
+	}
+	attempts, err := s.repo.RouteAttempts(task.ID, task.RouteRun)
+	if err != nil {
+		return false
+	}
+	if len(attempts) > 0 {
+		last := attempts[len(attempts)-1]
+		if last.DispatchState == "submission_unknown" || last.DispatchState == "accepted" {
+			return false
+		}
 	}
 	if cloudAgentEmptyModelOutput(task) || cloudAgentStepTimedOut(task) {
 		return true
@@ -563,7 +669,7 @@ func (s *Service) finishCloudAgentPiModelStep(userID, runID, taskID, text, reaso
 		if err != nil {
 			return err
 		}
-		err = s.repo.MutateCloudAgent(userID, runID, run.Revision, func(current *model.CloudAgentExecution, _ *repository.Repository) error {
+		err = s.repo.MutateCloudAgent(userID, runID, run.Revision, func(current *model.CloudAgentExecution, repo *repository.Repository) error {
 			fresh, err := cloudAgentDecode(current)
 			if err != nil {
 				return err
@@ -571,20 +677,31 @@ func (s *Service) finishCloudAgentPiModelStep(userID, runID, taskID, text, reaso
 			if fresh.ActiveTaskID != taskID {
 				return nil
 			}
+			if len(callBatches) == 0 {
+				// 调用方没有显式提交本步调用（失败释放、输出越界纠正、压缩步骤）：
+				// 成功完成的模型步骤仍要把任务结果里的真实调用登记为 Pi 准入凭据，
+				// 并在整批通过校验时清掉参数纠偏计数。
+				s.adoptCloudAgentPiModelCalls(repo, userID, taskID, &fresh)
+			}
 			fresh.ActiveTaskID = ""
 			fresh.ActiveTextDraft = ""
 			if len(callBatches) > 0 {
 				// 一批全部有效的调用意味着模型回到了正常输出轨道，参数纠偏计数清零。
 				fresh.InvalidArgumentSteps = 0
+				// 本次模型步骤声明的调用是工具准入的凭据：Pi 先提交 /model，随后才按
+				// call id 逐个 /tool，只有这里记下的声明能证明该调用来自已提交结果。
+				fresh.PiModelCalls = append([]cloudAgentCall(nil), calls...)
+				fresh.PiModelTaskID = taskID
 			}
 			if reasoning != "" {
 				fresh.event(runID, "reasoning_message", map[string]any{"messageId": taskID + ":reasoning", "text": truncateRunes(reasoning, 8000)})
 			}
 			if len(callBatches) > 0 {
+				// 只复位工具选择策略：本步声明的调用已写入 PiModelCalls，Pi 会按
+				// call id 逐个 /tool 执行；服务端 Calls/CallIndex 表示“正在执行的
+				// 批次”，由写工具准入（prepareCloudAgentWriteReceipt）或只读分支
+				// 单独推进，这里不能抢先占用，否则准入守卫会判定上一步尚未完成。
 				fresh.Canonical.ToolChoice = "auto"
-				fresh.Calls = append([]cloudAgentCall(nil), calls...)
-				fresh.CallIndex = 0
-				fresh.StepSnapshotHash = cloudAgentCaptureStepSnapshotHash(calls)
 			}
 			if text != "" {
 				fresh.event(runID, "assistant_message", map[string]any{"messageId": taskID, "text": text})
@@ -605,6 +722,35 @@ func (s *Service) finishCloudAgentPiModelStep(userID, runID, taskID, text, reaso
 		}
 	}
 	return repository.ErrCreationConflict
+}
+
+// adoptCloudAgentPiModelCalls 从已成功的模型步骤任务里登记 Pi 调用声明。
+//
+// Pi 会先提交 /model，随后才按 call id 逐个 /tool；只有这里记下的声明能证明该
+// 调用来自已提交的结果。压缩步骤与失败/越界纠正的步骤不产生可执行调用。
+// 注意：这里只写 PiModelCalls/PiModelTaskID 与纠偏计数，不占用执行批次
+// （Calls/CallIndex/StepSnapshotHash 由写工具准入或只读分支推进）。
+func (s *Service) adoptCloudAgentPiModelCalls(repo *repository.Repository, userID, taskID string, fresh *cloudAgentRuntime) {
+	task, err := repo.TaskForUser(userID, taskID)
+	if err != nil || task.Operation != cloudAgentStepOperation || task.Status != model.TaskStatusSucceeded {
+		return
+	}
+	var result struct {
+		Text      string           `json:"text"`
+		ToolCalls []cloudAgentCall `json:"toolCalls"`
+	}
+	if err := json.Unmarshal([]byte(task.ResultJSON), &result); err != nil {
+		return
+	}
+	if cloudAgentOutputViolation(result.Text, len(result.ToolCalls)) != "" || validateCloudAgentCalls(result.ToolCalls) != nil {
+		// 越界或结构非法的调用不得进入 Pi 准入凭据，避免为不存在的结果放行。
+		fresh.PiModelCalls = nil
+		fresh.PiModelTaskID = ""
+		return
+	}
+	fresh.PiModelCalls = append([]cloudAgentCall(nil), result.ToolCalls...)
+	fresh.PiModelTaskID = taskID
+	fresh.InvalidArgumentSteps = 0
 }
 
 // finishCloudAgentPiModelStepWithInvalidCalls 提交一个含无效调用的模型步骤（参数纠偏轮）。
@@ -637,6 +783,9 @@ func (s *Service) finishCloudAgentPiModelStepWithInvalidCalls(userID, runID, tas
 			fresh.ActiveTaskID = ""
 			fresh.ActiveTextDraft = ""
 			fresh.InvalidArgumentSteps++
+			// 整批（含被拒调用）都是本步已提交的模型声明，回执配对按原始调用核对。
+			fresh.PiModelCalls = append([]cloudAgentCall(nil), calls...)
+			fresh.PiModelTaskID = taskID
 			if reasoning != "" {
 				fresh.event(runID, "reasoning_message", map[string]any{"messageId": taskID + ":reasoning", "text": truncateRunes(reasoning, 8000)})
 			}

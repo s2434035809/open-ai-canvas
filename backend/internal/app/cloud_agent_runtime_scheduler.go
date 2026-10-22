@@ -42,7 +42,7 @@ func (s *Service) cloudAgentExecutionOutput(task *model.Task, initial cloudAgent
 	}
 	// 事件已全量落库，运行详情只返回一页：默认是尾部窗口，sinceSeq 只取增量。
 	// 四个位置字段与 events 一起返回，客户端据此判断"是否还有更早的记录"。
-	out.Events = s.cloudAgentRunEventsForView(task.UserID, run, &state, view.SinceSeq, view.EventLimit)
+	out.Events = s.cloudAgentRunEventsForView(task.UserID, run, &state, view.SinceSeq, view.EventLimit, view.FromStart)
 	// EventSeqBase 必须与真正返回的这一页对齐（eventLimit 把它收窄时也一样），
 	// 不变量 events[i].seq == eventSeqBase + i + 1 才成立。页为空时退回窗口水位：
 	// 那时没有"首条事件"，但仍然要能说明窗口在整条日志里的位置。
@@ -54,12 +54,19 @@ func (s *Service) cloudAgentExecutionOutput(task *model.Task, initial cloudAgent
 	if len(out.Events) > 0 {
 		out.LatestSeq = out.Events[len(out.Events)-1].Seq
 	}
-	if view.SinceSeq == 0 && len(out.Events) < out.EventCount {
+	if view.SinceSeq == 0 && !view.FromStart && len(out.Events) < out.EventCount {
 		out.EventsTruncated = true
 	}
 	out.Approval = state.Approval
 	if cloudAgentRunTerminal(run.Status) {
 		out.Approval = nil
+		if state.Request.Surface == "creation" {
+			if session, err := s.repo.CloudAgentPiSession(task.UserID, task.ID); err == nil {
+				out.CreationContextMessageIDs = cloudAgentCreationContextMessageIDs(session.SessionJSONL)
+			} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, err
+			}
+		}
 	}
 	out.Step = state.Step
 	if stateErr == nil && state.ActiveTaskID != "" && (run.Status == "running" || run.Status == "queued") {
@@ -210,10 +217,23 @@ func (s *Service) advanceCloudAgent(run *model.CloudAgentExecution) (err error) 
 		}
 		return s.terminateCloudAgent(run, "Agent 运行状态损坏，本轮已停止")
 	}
+	if len(state.RetryReplay) > 0 {
+		return s.advanceCloudAgentCreationReplay(run, &state)
+	}
 	// 单步边界每次推进都重新解析：管理员改配置后，正在跑的这一轮下一步就用新值。
 	state.StepLimits, err = s.cloudAgentStepLimits()
 	if err != nil {
 		return err
+	}
+	if state.ActiveTaskID == "" && state.MediaTaskID == "" && state.CallIndex >= len(state.Calls) && len(state.CreationPendingImages) > 0 {
+		tasks, ready, err := s.cloudAgentCreationPendingImages(run.UserID, run.ID, &state)
+		if err != nil || !ready {
+			return err
+		}
+		return s.repo.MutateCloudAgentRun(run, func(current *model.CloudAgentExecution, _ *repository.Repository) error {
+			cloudAgentRecordCreationImageGroup(run.ID, &state, tasks)
+			return cloudAgentSave(current, &state)
+		})
 	}
 	if state.ActiveTaskID != "" {
 		task, err := s.repo.TaskForUser(run.UserID, state.ActiveTaskID)
@@ -242,7 +262,7 @@ func (s *Service) advanceCloudAgent(run *model.CloudAgentExecution) (err error) 
 					eventType = "assistant_delta"
 					payload = map[string]any{"messageId": task.ID, "text": delta}
 				}
-				if err := s.repo.MutateCloudAgent(run.UserID, run.ID, run.Revision, func(current *model.CloudAgentExecution, repo *repository.Repository) error {
+				if err := s.repo.MutateCloudAgentRun(run, func(current *model.CloudAgentExecution, repo *repository.Repository) error {
 					state.event(run.ID, eventType, payload)
 					state.ActiveTextDraft = task.TextDraft
 					return cloudAgentSave(current, &state)
@@ -290,7 +310,7 @@ func (s *Service) advanceCloudAgent(run *model.CloudAgentExecution) (err error) 
 		if cloudAgentStepTimedOut(task) && state.StepTimeoutEscalated < cloudAgentMaxStepTimeoutEscalations {
 			return s.correctCloudAgentStepTimeout(run, &state)
 		}
-		return s.repo.MutateCloudAgent(run.UserID, run.ID, run.Revision, func(current *model.CloudAgentExecution, repo *repository.Repository) error {
+		return s.repo.MutateCloudAgentRun(run, func(current *model.CloudAgentExecution, repo *repository.Repository) error {
 			if task.Status != model.TaskStatusSucceeded {
 				current.Status = "failed"
 				text, reason := cloudAgentModelFailure(task)
@@ -327,6 +347,10 @@ func (s *Service) advanceCloudAgent(run *model.CloudAgentExecution) (err error) 
 						return cloudAgentSave(current, &state)
 					}
 					cloudAgentDropInterjections(run.ID, "本轮已达到模型调用上限", &state)
+				}
+				if state.CommerceBatch != nil && !cloudAgentStepBudgetExhausted(&state) {
+					state.Canonical.Messages = append(state.Canonical.Messages, map[string]any{"role": "user", "content": cloudAgentCommerceRecoveryInstruction + " 先调用 commerce_plan_wait，不要提前结束。"})
+					return cloudAgentSave(current, &state)
 				}
 				if !cloudAgentStepBudgetExhausted(&state) && !state.ActionNudged {
 					if pending := cloudAgentPendingPlanItems(state.Plan); len(pending) > 0 {
@@ -368,6 +392,9 @@ func (s *Service) advanceCloudAgent(run *model.CloudAgentExecution) (err error) 
 	}
 	cloudAgentDrainInterjections(run.ID, &state)
 	softReadGuard := state.ReadLoopNudge
+	// 上一步的模型调用已经回来，先用它的上游实测用量更新压力锚点，再发下一步：
+	// 下一步的读数与后面的正文裁剪判定都要用到这份锚点。
+	s.recordCloudAgentTokenAnchor(run.UserID, &state)
 	// 轮内唯一裁剪 = 图片：超出保留轮次的看图结果换成文字回执（正文一律保留）。
 	// 它必须在压缩判定之前跑：图片是最贵的一类内容，先移出再评估 token 压力才有意义。
 	if changed, pruned := cloudAgentPruneInspectedImages(&state.Canonical, nil); changed {
@@ -399,6 +426,7 @@ func (s *Service) advanceCloudAgent(run *model.CloudAgentExecution) (err error) 
 	// 思考模型可以把单步拖到几分钟）；空输出升级重试时改为关思考 + 放大预算。
 	stepThinking := cloudAgentReasoningEnabled(state.Policy.ReasoningMode) && !state.ForceThinkingOff
 	stepOutputTokens := cloudAgentStepOutputBudget(state.StepLimits, state.BoostStepOutputBudget)
+	canonical.Tools = cloudAgentCreationModelTools(&state, canonical.Tools)
 	input := map[string]any{"mode": "text", "prompt": state.Request.Prompt, "agentRequests": map[string]any{"canonical": canonical}, "config": map[string]any{"channelId": state.Request.ChannelID, "channelModelKey": state.Request.ChannelModelKey, "model": firstNonEmpty(state.Request.ChannelModelKey, state.Request.Model)}, "textOptions": map[string]any{"stream": true, "thinking": stepThinking, "maxOutputTokens": stepOutputTokens}}
 	if len(references) > 0 {
 		input["referenceImages"] = references
@@ -568,6 +596,12 @@ func (s *Service) terminateCloudAgent(run *model.CloudAgentExecution, message st
 	if run == nil {
 		return errors.New(message)
 	}
+	if run.ExecutionFence != nil {
+		return s.repo.MutateCloudAgentRun(run, func(current *model.CloudAgentExecution, _ *repository.Repository) error {
+			current.Status, current.FailureMessage, current.CleanupPending = "failed", message, true
+			return nil
+		})
+	}
 	if err := s.repo.MarkCloudAgentFailed(run.UserID, run.ID, run.Revision, message); err != nil && !errors.Is(err, repository.ErrCreationConflict) {
 		return err
 	}
@@ -575,12 +609,12 @@ func (s *Service) terminateCloudAgent(run *model.CloudAgentExecution, message st
 }
 
 func (s *Service) failCloudAgent(run *model.CloudAgentExecution, state *cloudAgentRuntime, message string) error {
-	return s.repo.MutateCloudAgent(run.UserID, run.ID, run.Revision, func(current *model.CloudAgentExecution, _ *repository.Repository) error {
+	return s.repo.MutateCloudAgentRun(run, func(current *model.CloudAgentExecution, _ *repository.Repository) error {
 		current.Status = "failed"
 		current.FailureMessage = truncateRunes(message, 1000)
 		state.PendingLessonDrafts = nil
 		cloudAgentDropInterjections(run.ID, "本轮已结束："+truncateRunes(message, 120), state)
-		state.event(run.ID, "run_failed", map[string]any{"text": message})
+		state.event(run.ID, "run_failed", map[string]any{"text": message, "reason": "agent_run_failed"})
 		return cloudAgentSave(current, state)
 	})
 }

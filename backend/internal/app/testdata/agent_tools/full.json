@@ -1042,6 +1042,7 @@
           "category": {
             "description": "只看某一类的索引",
             "enum": [
+              "smart_creation",
               "storyboard",
               "video",
               "image",
@@ -1084,6 +1085,7 @@
           "category": {
             "description": "这条经验最贴近的环节（受控枚举，拿不准用 other）",
             "enum": [
+              "smart_creation",
               "storyboard",
               "video",
               "image",

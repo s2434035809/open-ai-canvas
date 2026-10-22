@@ -154,8 +154,10 @@ func cloudAgentReadToolCached(repo *repository.Repository, userID string, state 
 					if err := json.Unmarshal(cached.Result, &restored); err != nil {
 						return nil, errors.New("缓存的 Agent 只读结果无效")
 					}
+					cloudAgentCreationSkillRead(state, call)
 					return restored, nil
 				}
+				cloudAgentCreationSkillRead(state, call)
 				return map[string]any{
 					"cacheReplay": true,
 					"replayCount": cached.ReplayCount,

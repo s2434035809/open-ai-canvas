@@ -261,14 +261,30 @@ func cloudAgentFallbackCheckpoint(state *cloudAgentRuntime) agentcontext.Checkpo
 			history = append(history, role+": "+truncateRunes(content, 1800))
 		}
 	}
+	// Historical summaries retain dialogue, but current sources and plans must
+	// come from this run even when compacting an earlier checkpoint again.
+	checkpoint.CreationState = cloudAgentCreationCheckpointState(state)
 	if len(history) > 8 {
 		history = history[len(history)-8:]
 	}
 	currentHistory := strings.Join(history, "\n")
-	checkpoint.HistorySummary = truncateRunes(strings.TrimSpace(checkpoint.HistorySummary+"\n"+currentHistory), 10000)
-	checkpoint.ScriptDesign = truncateRunes(strings.TrimSpace(checkpoint.ScriptDesign+"\n"+state.CreativeAnchor.UserPrompt+"\n"+currentHistory), 10000)
+	checkpoint.HistorySummary = cloudAgentFallbackSummary(checkpoint.HistorySummary, currentHistory, 3000)
+	checkpoint.ScriptDesign = cloudAgentFallbackSummary(checkpoint.ScriptDesign, state.CreativeAnchor.UserPrompt+"\n"+currentHistory, 4000)
 	checkpoint.CurrentWork = truncateRunes(state.Request.Prompt, 3000)
-	checkpoint.NextStep = "继续当前工作；执行前重新读取画布和任务状态，并优先处理未完成任务。"
+	for index := len(state.Canonical.Messages) - 1; index >= 0; index-- {
+		message := state.Canonical.Messages[index]
+		source := stringField(message, cloudAgentContextSourceKey)
+		if stringField(message, "role") == "user" && (source == "" || source == "user_interjection") {
+			if content := strings.TrimSpace(stringField(message, "content")); content != "" {
+				checkpoint.CurrentWork = truncateRunes(content, 3000)
+				break
+			}
+		}
+	}
+	if len(state.PendingInterjections) > 0 {
+		checkpoint.CurrentWork = truncateRunes(state.PendingInterjections[len(state.PendingInterjections)-1].Text, 3000)
+	}
+	checkpoint.NextStep = "按最新用户要求继续；需要任务事实时先查询状态，已完成任务不重复提交。"
 	// 锚点不再携带权限与"可自行决定"清单（用户消息定义目标），这里只把跨步必须记住的
 	// 视觉事实带进摘要：否则压缩后模型会重新声称"没有视觉识别证据"并重复看图。
 	for _, asset := range state.CreativeAnchor.ReferenceAssets {
@@ -291,12 +307,40 @@ func cloudAgentFallbackCheckpoint(state *cloudAgentRuntime) agentcontext.Checkpo
 	for _, key := range keys {
 		checkpoint.Decisions = append(checkpoint.Decisions, key+": "+truncateRunes(state.Decisions[key], 1200))
 	}
+	pending := map[string]string{}
+	for _, previous := range checkpoint.PendingTasks {
+		var fact map[string]any
+		if json.Unmarshal([]byte(previous), &fact) == nil && stringValue(fact["taskId"]) != "" {
+			id := stringValue(fact["taskId"])
+			pending[id] = cloudAgentJSON(map[string]any{"taskId": id, "status": "unknown", "requiresStatusCheck": true})
+		} else {
+			checkpoint.OperationHistory = append(checkpoint.OperationHistory, "历史待核实事项："+previous)
+		}
+	}
 	for _, fact := range cloudAgentContextFacts(state.Events) {
 		encoded := truncateRunes(cloudAgentJSON(fact), 1200)
 		checkpoint.OperationHistory = append(checkpoint.OperationHistory, encoded)
-		if fact["event"] == "generation_task_created" || stringValue(fact["status"]) == "running" {
-			checkpoint.PendingTasks = append(checkpoint.PendingTasks, encoded)
+		id, status := stringValue(fact["taskId"]), stringValue(fact["status"])
+		if id == "" {
+			continue
 		}
+		if status == "succeeded" || status == "failed" || status == "cancelled" {
+			delete(pending, id)
+		} else if status == "running" || status == "queued" || fact["event"] == "generation_task_created" {
+			if status == "" {
+				status = "unknown"
+			}
+			pending[id] = cloudAgentJSON(map[string]any{"taskId": id, "status": status, "requiresStatusCheck": true})
+		}
+	}
+	checkpoint.PendingTasks = nil
+	pendingIDs := make([]string, 0, len(pending))
+	for id := range pending {
+		pendingIDs = append(pendingIDs, id)
+	}
+	sort.Strings(pendingIDs)
+	for _, id := range pendingIDs {
+		checkpoint.PendingTasks = append(checkpoint.PendingTasks, pending[id])
 	}
 	if len(checkpoint.OperationHistory) > 24 {
 		checkpoint.OperationHistory = checkpoint.OperationHistory[len(checkpoint.OperationHistory)-24:]
@@ -305,6 +349,59 @@ func cloudAgentFallbackCheckpoint(state *cloudAgentRuntime) agentcontext.Checkpo
 		checkpoint.PendingTasks = checkpoint.PendingTasks[len(checkpoint.PendingTasks)-12:]
 	}
 	return checkpoint
+}
+
+// A failed semantic compaction must leave room for recent corrections instead
+// of letting a full older summary consume the entire persisted text budget.
+func cloudAgentFallbackSummary(previous, recent string, limit int) string {
+	latest := []rune(strings.TrimSpace(recent))
+	if len(latest) > limit/2 {
+		latest = latest[len(latest)-limit/2:]
+	}
+	return strings.TrimSpace(truncateRunes(strings.TrimSpace(previous), limit-len(latest)-4) + "\n" + string(latest))
+}
+
+// Source identities and plan content come from the durable run, never from a
+// model summary. Historical selection stays separate from message attachments.
+func cloudAgentCreationCheckpointState(state *cloudAgentRuntime) []string {
+	if state == nil || state.Request.Surface != "creation" {
+		return nil
+	}
+	entries := []string{"以下为本轮请求有效输入素材，来源可能是主动上传、显式继承或失败任务重试；空集合表示本轮没有直接输入素材。其他历史素材按用户意图通过 creation_media_read 查询和精读，不自动附带，也不能引用用户已排除的素材。"}
+	for _, asset := range state.Request.Attachments {
+		entries = append(entries, fmt.Sprintf("素材 id=%s kind=%s role=%s", asset.ResourceID, asset.Kind, asset.Role))
+	}
+	historical := []string{}
+	for id, runID := range state.CreationAttachmentRefs {
+		historical = append(historical, fmt.Sprintf("已精读历史上传 id=%s runId=%s；仅明确需要时作为生成参考", id, runID))
+	}
+	for id, ref := range state.CreationOutputRefs {
+		historical = append(historical, fmt.Sprintf("已精读历史成品 id=%s taskId=%s outputIndex=%d；仅明确需要时作为生成参考", id, ref.TaskID, ref.OutputIndex))
+	}
+	sort.Strings(historical)
+	entries = append(entries, historical...)
+	if plan := state.CommercePlan; plan != nil {
+		entries = append(entries, fmt.Sprintf("当前方案 id=%s version=%d hash=%s platform=%s site=%s language=%s variants=%s", plan.PlanID, plan.Version, cloudAgentCommercePlanHash(plan), plan.Platform, plan.Site, plan.Language, strings.Join(plan.LanguageVariants, ",")))
+		entries = append(entries, "整套风格与产品外观约束："+plan.StyleBible)
+		for _, fact := range plan.ProductFacts {
+			entries = append(entries, fmt.Sprintf("事实 id=%s status=%s sources=%s claim=%s", fact.ID, firstNonEmpty(fact.Status, "supported"), strings.Join(fact.SourceIDs, ","), fact.Claim))
+		}
+		for _, item := range plan.Items {
+			entries = append(entries, fmt.Sprintf("交付 id=%s type=%s language=%s purpose=%s targetCopy=%s sources=%s", item.ID, item.Type, firstNonEmpty(item.Language, plan.Language), item.Purpose, item.TargetCopy, strings.Join(item.AttachmentResourceIDs, ",")))
+		}
+	}
+	batch := state.CommerceBatch
+	if state.Approval != nil && state.Approval.Batch != nil {
+		batch = state.Approval.Batch
+		entries = append(entries, fmt.Sprintf("整套审批 id=%s decision=%s；仅服务端记录可授权执行", state.Approval.ID, state.Approval.Decision))
+	}
+	if batch != nil {
+		entries = append(entries, fmt.Sprintf("整套待完成 plan=%s version=%d hash=%s", batch.PlanID, batch.Version, batch.PlanHash))
+		for _, item := range batch.Items {
+			entries = append(entries, fmt.Sprintf("任务 item=%s taskId=%s；先查询状态，不能重发", item.ItemID, item.TaskID))
+		}
+	}
+	return entries
 }
 
 // cloudAgentBoundCheckpoint 把检查点压进固定预算：它是"省上下文"的手段，自己不能变成
@@ -329,6 +426,9 @@ func cloudAgentBoundCheckpoint(checkpoint agentcontext.Checkpoint) agentcontext.
 	checkpoint.Decisions = bound(checkpoint.Decisions, 8, 150)
 	checkpoint.Constraints = bound(checkpoint.Constraints, 8, 150)
 	checkpoint.UserPreferences = bound(checkpoint.UserPreferences, 6, 300)
+	// The plan schema itself caps facts at 60 and items at 20. Keep the full
+	// server-authored identity list while bounding each untrusted prose value.
+	checkpoint.CreationState = bound(checkpoint.CreationState, 120, 220)
 	return checkpoint
 }
 
@@ -426,6 +526,7 @@ func (s *Service) advanceCloudAgentContextCompaction(run *model.CloudAgentExecut
 				// 执行事实只取本轮服务端事件，不采纳模型写的 operation/pending 列表。
 				parsed.OperationHistory = checkpoint.OperationHistory
 				parsed.PendingTasks = checkpoint.PendingTasks
+				parsed.CreationState = checkpoint.CreationState
 				checkpoint, mode, reason = parsed, "model", ""
 			} else {
 				reason = "压缩模型输出不符合检查点合同，已使用服务端保底检查点"

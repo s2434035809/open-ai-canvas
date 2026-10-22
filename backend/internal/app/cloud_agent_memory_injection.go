@@ -24,3 +24,16 @@ func cloudAgentInjectedMemoryIDs(input map[string]any) []string {
 	}
 	return ids
 }
+
+// cloudAgentWithoutMemoryMessages 去掉只属于本次模型请求的召回消息：
+// 它们必须随请求临时注入，不能写回 canonical 历史，否则会污染会话并让下一轮重复携带。
+func cloudAgentWithoutMemoryMessages(messages []map[string]any) []map[string]any {
+	kept := make([]map[string]any, 0, len(messages))
+	for _, message := range messages {
+		if stringField(message, cloudAgentContextSourceKey) == "agent_memory" {
+			continue
+		}
+		kept = append(kept, message)
+	}
+	return kept
+}

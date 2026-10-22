@@ -1,7 +1,8 @@
-import { http, apiBaseURL } from "@/services/api/request";
+import { compactApiParams, http, apiBaseURL, ApiError } from "@/services/api/request";
 import { consumeTaskTextStream, createTaskTextStreamParser } from "@/services/api/task-text-stream";
 
 export type AgentPermissionMode = "read_only" | "auto" | "request_approval";
+export type AgentOutputPreference = "concise" | "detailed";
 export type AgentReasoningMode = "off" | "auto" | "deep";
 export type AgentMediaSettings = {
     logicalModelId?: string;
@@ -16,6 +17,10 @@ export type AgentMediaSettings = {
     videoWatermark?: boolean;
     videoArkPrivateAssetUpload?: boolean;
 };
+export type AgentModelSelection = { logicalModelId: string; channelId?: never; channelModelKey?: never } | { logicalModelId?: never; channelId: string; channelModelKey: string };
+export type AgentCreationAttachment = { resourceId: string; storageKey: `resource:${string}`; kind: "image" | "video" | "audio"; role: "product" | "reference" | "competitor" | "style" | "source" | "person"; name: string; turnIndex?: number };
+export type AgentMediaChoice = { selection: AgentModelSelection; selectionMode?: "preferred" | "fixed"; parameterMode: "auto" | "manual"; size?: string; quality?: string; durationSeconds?: number; count?: number };
+
 /**
  * 审批决策接口只接受这组生成参数：它们由用户在本机审批卡里编辑，服务端按同一套
  * 模型能力契约重新解析（见后端 CloudAgentMediaSettings）。generate_media 的其余
@@ -51,7 +56,6 @@ export function normalizeAgentMediaSettings(settings: AgentMediaSettings | undef
 export function agentMediaSettingsEqual(left: AgentMediaSettings | undefined, right: AgentMediaSettings | undefined): boolean {
     return JSON.stringify(normalizeAgentMediaSettings(left) ?? null) === JSON.stringify(normalizeAgentMediaSettings(right) ?? null);
 }
-
 export type AgentProfileScope = "user" | "project" | "canvas";
 
 export type AgentProfileLayer = {
@@ -67,6 +71,26 @@ export type AgentProfileView = {
     revision: string;
     hash: string;
     layers: AgentProfileLayer[];
+};
+
+export type AgentContextSelection = {
+    surface?: string;
+    scopes?: string[];
+    canvasId?: string;
+    projectId?: string;
+};
+
+export type AgentSessionStatus = "active" | string;
+
+export type AgentSession = {
+    id: string;
+    title?: string;
+    surface: string;
+    lastSurface?: string;
+    status: AgentSessionStatus;
+    revision: number;
+    createdAt: string;
+    updatedAt: string;
 };
 
 export type AgentApprovalPreviewOperation = "add_node" | "update_node" | "connect_nodes" | "arrange_nodes" | "generate_media" | "create_storyboard" | "edit_storyboard" | "create_character" | "plan_step";
@@ -104,8 +128,15 @@ export type AgentApproval = {
 };
 
 export type AgentRun = {
+    retry?: { runId: string; taskId?: string; taskIds?: string[] };
     id: string;
+    idempotencyKey?: string;
+    sessionId?: string;
+    userPrompt?: string;
+    parentId?: string;
     canvasId: string;
+    surface?: string;
+    contextSelection?: AgentContextSelection;
     status: "queued" | "running" | "waiting_approval" | "completed" | "failed" | "cancelled" | "rejected";
     permissionMode: AgentPermissionMode;
     revision?: number;
@@ -116,9 +147,15 @@ export type AgentRun = {
     updatedAt: string;
     skills?: Array<{ id: string; name: string; version: string; hash: string }>;
     events?: AgentEvent[];
+    latestSeq?: number;
+    eventSeqBase?: number;
+    eventCount?: number;
+    eventsTruncated?: boolean;
     spentCredits?: number;
     step?: number;
     activeMessage?: { messageId: string; text: string };
+    attachments?: AgentCreationAttachment[];
+    creationContextMessageIds?: string[];
     approval?: AgentApproval;
 };
 
@@ -144,11 +181,25 @@ export class AgentStreamError extends Error {
     }
 }
 
+export type AgentCreationContextEntry = {
+    messageId?: string;
+    role: "user" | "assistant";
+    mode: "image" | "video" | "text";
+    content?: string;
+    taskIds?: string[];
+    resourceIds?: string[];
+};
+
 export type CreateAgentRunInput = {
+    creationContext?: AgentCreationContextEntry[];
+    latestVisibleResult?: { messageId: string; taskIds: string[] };
+    retry?: { runId: string; taskId?: string; taskIds?: string[] };
     reasoningMode?: AgentReasoningMode;
     profileRevision?: string;
+    sessionId?: string;
+    surface?: string;
     /** 空字符串 = 平台级对话（未进入画布），后端不开放画布工具。 */
-    canvasId: string;
+    canvasId?: string;
     prompt: string;
     model?: string;
     logicalModelId?: string;
@@ -159,19 +210,55 @@ export type CreateAgentRunInput = {
     focusNodeOmittedCount?: number;
     permissionMode?: AgentPermissionMode;
     contextScope?: string[];
+    contextSelection?: AgentContextSelection;
     budget?: { maxCredits?: number; maxGenerationTasks?: number; maxVideoSeconds?: number; maxSteps?: number };
     idempotencyKey: string;
+    attachments?: AgentCreationAttachment[];
+    attachmentMode?: "replace" | "inherit" | "append";
+    outputPreference?: AgentOutputPreference;
+    mediaSettings?: { image?: AgentMediaChoice; video?: AgentMediaChoice };
+};
+
+export type CreateAgentSessionInput = {
+    id?: string;
+    title?: string;
+    surface?: string;
+};
+
+export type ListAgentSessionsOptions = {
+    canvasId?: string;
+    surface?: string;
+    status?: string;
+    limit?: number;
+    signal?: AbortSignal;
+};
+
+export type ListAgentSessionRunsOptions = {
+    limit?: number;
+    before?: string;
+    signal?: AbortSignal;
 };
 
 // Only Agent admission endpoints have server-side fingerprint/idempotency protection.
 // Never apply this policy to arbitrary provider generation POSTs.
+export function isAgentAdmissionRejection(error: unknown): boolean {
+    if (!(error instanceof ApiError)) return false;
+    const status = error.status === 200 ? error.code : error.status;
+    return [400, 401, 402, 403, 404, 413, 422].includes(status || 0) || error.reason === "canvas_agent_busy" || error.reason === "agent_session_stale_parent";
+}
+
 async function submitAgentRequest(path: string, input: CreateAgentRunInput) {
     const body = JSON.parse(JSON.stringify(input)) as CreateAgentRunInput;
+    let outcomeUnconfirmed = false;
     for (let attempt = 0; ; attempt++) {
         try {
             return await http.post<{ run: AgentRun }>(path, body, { timeout: 15_000 });
         } catch (cause) {
             const error = cause as { retryable?: boolean; retryAfterMs?: number };
+            // A later rejection cannot prove that a prior timed-out attempt was
+            // never accepted. Preserve its pending identity for session recovery.
+            if (outcomeUnconfirmed && isAgentAdmissionRejection(cause)) throw new Error(`Agent 请求结果待确认；${cause instanceof Error ? cause.message : "请恢复原请求"}`, { cause });
+            if (!isAgentAdmissionRejection(cause)) outcomeUnconfirmed = true;
             if (!error.retryable || attempt >= 2) throw cause;
             const delay = Math.max(500 * 2 ** attempt * (0.75 + Math.random() * 0.5), error.retryAfterMs || 0);
             // Long rate-limit waits return control to the user with the original
@@ -190,12 +277,42 @@ export async function sendAgentMessage(runId: string, input: CreateAgentRunInput
     return submitAgentRequest(`/agent/runs/${encodeURIComponent(runId)}/messages`, input);
 }
 
+export function listAgentSessions(options: ListAgentSessionsOptions = {}) {
+    return http.get<{ sessions: AgentSession[]; deletedSessionIds?: string[]; conversationRetentionDays?: number }>("/agent/sessions", {
+        params: compactApiParams({ canvasId: options.canvasId, surface: options.surface, status: options.status, limit: options.limit }),
+        signal: options.signal,
+        timeout: 15_000,
+    });
+}
+
+export function createAgentSession(input: CreateAgentSessionInput = {}) {
+    return http.post<{ session: AgentSession }>("/agent/sessions", input, { timeout: 15_000 });
+}
+
+export function getAgentSession(sessionId: string, signal?: AbortSignal) {
+    return http.get<{ session: AgentSession; runs: AgentRun[]; nextRunCursor?: string }>(`/agent/sessions/${encodeURIComponent(sessionId)}`, { signal, timeout: 15_000 });
+}
+
+export function deleteAgentSession(sessionId: string) {
+    return http.delete<{ id: string; deleted: boolean }>(`/agent/sessions/${encodeURIComponent(sessionId)}`, { timeout: 15_000 });
+}
+
+export function listAgentSessionRuns(sessionId: string, options: ListAgentSessionRunsOptions = {}) {
+    return http.get<{ runs: AgentRun[]; nextRunCursor?: string }>(`/agent/sessions/${encodeURIComponent(sessionId)}/runs`, {
+        params: compactApiParams({ limit: options.limit, before: options.before }),
+        signal: options.signal,
+        timeout: 15_000,
+    });
+}
+
 export function sendAgentInterjection(runId: string, input: { text: string; messageId: string }) {
     return http.post<{ accepted: boolean; pending: number }>(`/agent/runs/${encodeURIComponent(runId)}/interjections`, input, { timeout: 20_000 });
 }
 
 export function getAgentCapabilities() {
-    return http.get<{ version: number; permissionModes: AgentPermissionMode[]; contextScopes: string[]; skills: boolean; writeTools: boolean; capabilitySetVersion?: string; capabilitySetHash?: string; nodeTypes?: string[] }>("/agent/capabilities", { timeout: 15_000 });
+    return http.get<{ version: number; permissionModes: AgentPermissionMode[]; contextScopes: string[]; skills: boolean; writeTools: boolean; capabilitySetVersion?: string; capabilitySetHash?: string; nodeTypes?: string[] }>("/agent/capabilities", {
+        timeout: 15_000,
+    });
 }
 
 export function getAgentProfile(options: { projectId?: string; canvasId?: string; scope?: AgentProfileScope } = {}) {
@@ -211,8 +328,8 @@ export function updateAgentProfile(input: { scope: AgentProfileScope; projectId?
     return http.patch<AgentProfileView>("/agent/profile", input, { timeout: 15_000 });
 }
 
-export function getAgentRun(runId: string, signal?: AbortSignal) {
-    return http.get<{ run: AgentRun }>(`/agent/runs/${encodeURIComponent(runId)}`, { signal });
+export function getAgentRun(runId: string, signal?: AbortSignal, options?: { sinceSeq?: number; eventLimit?: number; fromStart?: boolean }) {
+    return http.get<{ run: AgentRun }>(`/agent/runs/${encodeURIComponent(runId)}`, { signal, timeout: 15_000, params: compactApiParams({ sinceSeq: options?.sinceSeq, eventLimit: options?.eventLimit, fromStart: options?.fromStart ? 1 : undefined }) });
 }
 
 export function cancelAgentRun(runId: string) {
@@ -223,7 +340,7 @@ export function undoAgentCanvasRun(runId: string, input: { stepId?: string; expe
     return http.post<{ accepted: boolean; snapshotHash: string }>(`/agent/runs/${encodeURIComponent(runId)}/undo`, input, { signal });
 }
 
-export async function decideAgentApproval(runId: string, approvalId: string, decision: "approve" | "reject", reason?: string, signal?: AbortSignal, mediaSettings?: AgentMediaSettings) {
+export async function decideAgentApproval(runId: string, approvalId: string, decision: "approve" | "reject" | "refresh", reason?: string, signal?: AbortSignal, mediaSettings?: AgentMediaSettings) {
     // 后端对该请求体启用了 DisallowUnknownFields：审批卡展示的是完整 generate_media
     // 参数，多带一个 prompt/referenceNodeIds 就整条 400，审批卡不关闭，用户看到的是
     // 「点了同意执行没反应」。这里统一按白名单收敛，调用方无需各自记得过滤。
@@ -231,10 +348,14 @@ export async function decideAgentApproval(runId: string, approvalId: string, dec
     return http.post<{ accepted: boolean }>(`/agent/runs/${encodeURIComponent(runId)}/approvals/${encodeURIComponent(approvalId)}/decision`, { decision, reason: reason?.trim() || undefined, ...(settings ? { mediaSettings: settings } : {}) }, { signal });
 }
 
-export function subscribeAgentEvents(runId: string, onEvent: (event: AgentEvent) => void, options: { after?: number; onError?: (error: unknown) => void; onConnectionChange?: (status: "connecting" | "connected" | "reconnecting" | "disconnected") => void; timeoutMs?: number } = {}) {
+export function subscribeAgentEvents(
+    runId: string,
+    onEvent: (event: AgentEvent) => void,
+    options: { after?: number; onError?: (error: unknown) => void; onConnectionChange?: (status: "connecting" | "connected" | "reconnecting" | "disconnected") => void; timeoutMs?: number } = {},
+) {
     const controller = new AbortController();
     let localSeq = 0;
-    let cursor = Number.isSafeInteger(options.after) && (options.after as number) > 0 ? options.after as number : 0;
+    let cursor = Number.isSafeInteger(options.after) && (options.after as number) > 0 ? (options.after as number) : 0;
     let lastActiveMessageKey = "";
     let lastStatusKey = "";
     const emit = (type: string, payload: Record<string, unknown>) => {
@@ -250,11 +371,18 @@ export function subscribeAgentEvents(runId: string, onEvent: (event: AgentEvent)
             const abortAttempt = () => attempt.abort();
             controller.signal.addEventListener("abort", abortAttempt, { once: true });
             let watchdog: ReturnType<typeof setTimeout>;
-            const touch = () => { clearTimeout(watchdog); watchdog = setTimeout(abortAttempt, options.timeoutMs ?? 45_000); };
+            const touch = () => {
+                clearTimeout(watchdog);
+                watchdog = setTimeout(abortAttempt, options.timeoutMs ?? 45_000);
+            };
             touch();
             options.onConnectionChange?.(failures ? "reconnecting" : "connecting");
             try {
-                const response = await fetch(`${String(apiBaseURL).replace(/\/+$/, "")}/agent/runs/${encodeURIComponent(runId)}/events?after=${cursor}`, { credentials: "include", signal: attempt.signal, headers: { Accept: "text/event-stream", "Last-Event-ID": String(cursor) } });
+                const response = await fetch(`${String(apiBaseURL).replace(/\/+$/, "")}/agent/runs/${encodeURIComponent(runId)}/events?after=${cursor}`, {
+                    credentials: "include",
+                    signal: attempt.signal,
+                    headers: { Accept: "text/event-stream", "Last-Event-ID": String(cursor) },
+                });
                 if (!response.ok) {
                     const error = new AgentStreamError(response.status);
                     const header = response.headers.get("retry-after");
@@ -279,40 +407,57 @@ export function subscribeAgentEvents(runId: string, onEvent: (event: AgentEvent)
                 const parser = createTaskTextStreamParser();
                 const connectedAt = Date.now();
                 touch();
-                const cancelReader = () => { void reader.cancel().catch(() => undefined); };
+                const cancelReader = () => {
+                    void reader.cancel().catch(() => undefined);
+                };
                 attempt.signal.addEventListener("abort", cancelReader, { once: true });
                 try {
                     while (!controller.signal.aborted && !attempt.signal.aborted) {
                         const { value, done } = await reader.read();
                         if (value?.length) touch();
-                        consumeTaskTextStream(parser, decoder.decode(value, { stream: !done }), (item) => {
-                            if (item.event === "agent_event") {
-                                const event = item.data as AgentEvent;
-                                if (event.runId !== runId || !Number.isSafeInteger(event.seq) || event.seq <= cursor) return;
-                                cursor = event.seq;
-                                failures = 0;
-                                options.onConnectionChange?.("connected");
-                                onEvent({ ...event, localSeq: ++localSeq });
-                            } else if (item.event === "run_snapshot") {
-                                const run = item.data as AgentRun;
-                                if (run.id !== runId) return;
-                                options.onConnectionChange?.("connected");
-                                if (run.activeMessage) {
-                                    const messageKey = `${run.activeMessage.messageId}\u0000${run.activeMessage.text}`;
-                                    if (messageKey !== lastActiveMessageKey) {
-                                        lastActiveMessageKey = messageKey;
-                                        emit("assistant_message", run.activeMessage);
+                        consumeTaskTextStream(
+                            parser,
+                            decoder.decode(value, { stream: !done }),
+                            (item) => {
+                                if (item.event === "agent_event") {
+                                    const event = item.data as AgentEvent;
+                                    if (event.runId !== runId || !Number.isSafeInteger(event.seq) || event.seq <= cursor) return;
+                                    cursor = event.seq;
+                                    failures = 0;
+                                    options.onConnectionChange?.("connected");
+                                    onEvent({ ...event, localSeq: ++localSeq });
+                                } else if (item.event === "run_snapshot") {
+                                    const run = item.data as AgentRun;
+                                    if (run.id !== runId) return;
+                                    options.onConnectionChange?.("connected");
+                                    if (run.activeMessage) {
+                                        const messageKey = `${run.activeMessage.messageId}\u0000${run.activeMessage.text}`;
+                                        if (messageKey !== lastActiveMessageKey) {
+                                            lastActiveMessageKey = messageKey;
+                                            emit("assistant_message", run.activeMessage);
+                                        }
                                     }
-                                }
-                                const statusPayload = { status: run.status, revision: run.revision, cleanupPending: run.cleanupPending, failureMessage: run.failureMessage, skills: run.skills, spentCredits: run.spentCredits, step: run.step, approval: run.approval };
-                                const statusKey = JSON.stringify(statusPayload);
-                                if (statusKey !== lastStatusKey) {
-                                    lastStatusKey = statusKey;
-                                    emit("run_status", statusPayload);
-                                }
-                                terminal = !run.cleanupPending && ["completed", "failed", "cancelled", "rejected"].includes(run.status);
-                            } else if (item.event === "error") throw new Error("Agent 状态读取失败");
-                        }, done);
+                                    const statusPayload = {
+                                        status: run.status,
+                                        revision: run.revision,
+                                        eventCount: run.eventCount,
+                                        cleanupPending: run.cleanupPending,
+                                        failureMessage: run.failureMessage,
+                                        skills: run.skills,
+                                        spentCredits: run.spentCredits,
+                                        step: run.step,
+                                        approval: run.approval,
+                                    };
+                                    const statusKey = JSON.stringify(statusPayload);
+                                    if (statusKey !== lastStatusKey) {
+                                        lastStatusKey = statusKey;
+                                        emit("run_status", statusPayload);
+                                    }
+                                    terminal = !run.cleanupPending && ["completed", "failed", "cancelled", "rejected"].includes(run.status);
+                                } else if (item.event === "error") throw new Error("Agent 状态读取失败");
+                            },
+                            done,
+                        );
                         // A repeated initial snapshot is not a healthy connection.
                         // Sustained heartbeat traffic or advancing events reset the budget.
                         if (Date.now() - connectedAt >= 30_000 && value?.length) failures = 0;
@@ -339,7 +484,11 @@ export function subscribeAgentEvents(runId: string, onEvent: (event: AgentEvent)
             }
             options.onConnectionChange?.("reconnecting");
             await new Promise<void>((resolve) => {
-                const finish = () => { clearTimeout(timer); controller.signal.removeEventListener("abort", finish); resolve(); };
+                const finish = () => {
+                    clearTimeout(timer);
+                    controller.signal.removeEventListener("abort", finish);
+                    resolve();
+                };
                 const backoff = Math.min(1000 * 2 ** failures, 15000) * (0.75 + Math.random() * 0.5);
                 const timer = setTimeout(finish, Math.max(backoff, Math.min(retryAfterMs, 300_000)));
                 controller.signal.addEventListener("abort", finish, { once: true });

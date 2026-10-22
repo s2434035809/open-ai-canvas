@@ -66,7 +66,7 @@ func TestMemoryCandidateSurvivesCheckpointAndRequiresSuccessfulCompletion(t *tes
 				t.Fatalf("checkpoint lost candidate route/evidence: %+v err=%v", state.PendingLessonDrafts, err)
 			}
 			if succeeded {
-				if err := s.completeCloudAgentPiRun("user", root.ID); err != nil {
+				if err := s.completeCloudAgentPiRun("user", root.ID, 0); err != nil {
 					t.Fatal(err)
 				}
 			} else if err := s.failCloudAgent(run, &state, "后续任务失败"); err != nil {

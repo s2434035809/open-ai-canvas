@@ -14,6 +14,116 @@ import (
 	"yingce/backend/internal/repository"
 )
 
+func TestCloudAgentFallbackCheckpointUsesLatestTaskStatus(t *testing.T) {
+	for _, status := range []string{"succeeded", "failed", "cancelled"} {
+		t.Run(status, func(t *testing.T) {
+			state := cloudAgentRuntime{Request: CloudAgentRequest{Prompt: "只分析下一张图，不要重新生成"}}
+			state.event("run", "generation_task_created", map[string]any{"taskId": "finished", "status": "running"})
+			state.event("run", "tool_completed", map[string]any{"result": map[string]any{"taskId": "finished", "status": status, "taskSubmitted": true}})
+			state.event("run", "generation_task_created", map[string]any{"taskId": "active", "status": "running"})
+			checkpoint := cloudAgentFallbackCheckpoint(&state)
+			if len(checkpoint.PendingTasks) != 1 || !strings.Contains(checkpoint.PendingTasks[0], "active") {
+				t.Fatalf("已终结任务仍进入待办: %+v", checkpoint.PendingTasks)
+			}
+			if checkpoint.CurrentWork != state.Request.Prompt {
+				t.Fatalf("当前意图丢失: %q", checkpoint.CurrentWork)
+			}
+		})
+	}
+}
+
+func TestCloudAgentFallbackCheckpointClearsCompletedPriorPendingTask(t *testing.T) {
+	previous := agentcontext.Checkpoint{Version: agentcontext.Version, PendingTasks: []string{`{"taskId":"finished","status":"running"}`}}
+	frame, err := agentcontext.Frame(previous)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := cloudAgentRuntime{Canonical: canonicalAgentRequest{Messages: []map[string]any{{"role": "user", "content": frame, cloudAgentContextSourceKey: "checkpoint"}}}}
+	state.event("run", "tool_completed", map[string]any{"result": map[string]any{"taskId": "finished", "status": "succeeded"}})
+	if checkpoint := cloudAgentFallbackCheckpoint(&state); len(checkpoint.PendingTasks) != 0 {
+		t.Fatalf("旧检查点的待办未被新终态清除: %+v", checkpoint.PendingTasks)
+	}
+}
+
+func TestCloudAgentRepeatedCompactionUsesCurrentCreationSources(t *testing.T) {
+	previous := agentcontext.Checkpoint{
+		Version: agentcontext.Version,
+		CreationState: []string{
+			"素材 id=old-product kind=image role=product",
+			"当前方案 id=old-plan",
+		},
+		Constraints: []string{"后面发商品图时制作五张方图；站点可在当轮修改"},
+	}
+	frame, err := agentcontext.Frame(previous)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, newProduct := range []bool{true, false} {
+		t.Run(fmt.Sprintf("new-product-%t", newProduct), func(t *testing.T) {
+			state := cloudAgentRuntime{
+				Request: CloudAgentRequest{Surface: "creation", Prompt: "这次只分析图片"},
+				Canonical: canonicalAgentRequest{Messages: []map[string]any{
+					{"role": "user", "content": frame, cloudAgentContextSourceKey: "checkpoint"},
+					{"role": "user", "content": "这次只分析图片"},
+				}},
+			}
+			if newProduct {
+				state.Request.Attachments = []CloudAgentAttachment{{ResourceID: "new-product", Kind: "image", Role: "product"}}
+			}
+			checkpoint := cloudAgentFallbackCheckpoint(&state)
+			sources := strings.Join(checkpoint.CreationState, "\n")
+			if strings.Contains(sources, "old-product") || strings.Contains(sources, "old-plan") {
+				t.Fatalf("旧检查点覆盖本轮素材和方案: %s", sources)
+			}
+			if strings.Contains(sources, "new-product") != newProduct {
+				t.Fatalf("压缩后本轮素材不一致: %s", sources)
+			}
+			if checkpoint.CurrentWork != "这次只分析图片" || len(checkpoint.Constraints) < 1 || checkpoint.Constraints[0] != previous.Constraints[0] {
+				t.Fatalf("丢失当前要求或原约定的适用条件: %+v", checkpoint)
+			}
+		})
+	}
+}
+
+func TestCloudAgentFallbackCheckpointKeepsLatestUserIntent(t *testing.T) {
+	state := cloudAgentRuntime{Request: CloudAgentRequest{Prompt: "生成套图"}, Canonical: canonicalAgentRequest{Messages: []map[string]any{
+		{"role": "user", "content": "生成套图"},
+		{"role": "user", "content": "【用户插话】先停止生成，只分析已完成结果", cloudAgentContextSourceKey: "user_interjection"},
+		{"role": "user", "content": "旧计划还有生成待办", cloudAgentContextSourceKey: "runtime"},
+	}}}
+	if checkpoint := cloudAgentFallbackCheckpoint(&state); checkpoint.CurrentWork != "【用户插话】先停止生成，只分析已完成结果" {
+		t.Fatalf("旧目标覆盖最新用户意图: %q", checkpoint.CurrentWork)
+	}
+}
+
+func TestCloudAgentFallbackCheckpointRetainsUpdatesAfterFullPriorSummary(t *testing.T) {
+	previous := agentcontext.Checkpoint{
+		Version:        agentcontext.Version,
+		HistorySummary: strings.Repeat("旧版方案说明", 700),
+		ScriptDesign:   strings.Repeat("旧版设计细节", 900),
+	}
+	frame, err := agentcontext.Frame(previous)
+	if err != nil {
+		t.Fatal(err)
+	}
+	update := "以后都改成五张方图，其余要求继续保留"
+	state := cloudAgentRuntime{
+		Request: CloudAgentRequest{Surface: "creation", Prompt: "这次德国站"},
+		Canonical: canonicalAgentRequest{Messages: []map[string]any{
+			{"role": "user", "content": frame, cloudAgentContextSourceKey: "checkpoint"},
+			{"role": "user", "content": update},
+			{"role": "assistant", "content": "已按新的数量要求调整"},
+			{"role": "user", "content": "这次德国站"},
+		}},
+	}
+	checkpoint := cloudAgentBoundCheckpoint(cloudAgentFallbackCheckpoint(&state))
+	for name, content := range map[string]string{"history": checkpoint.HistorySummary, "design": checkpoint.ScriptDesign} {
+		if !strings.Contains(content, update) || !strings.Contains(content, state.Request.Prompt) {
+			t.Errorf("%s 被旧摘要占满，丢失近期修改: %q", name, content)
+		}
+	}
+}
+
 // saveCloudAgentCompactionState 用真实保存路径持久化运行状态（消息、事件与检查点同事务），
 // 而不是直接改写 state_json：检查点从 v2 起不再承载消息与事件，绕过持久化层会让行上的
 // 计数与实际行数脱节。

@@ -1,16 +1,18 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type { AgentEvent, CreateAgentRunInput } from "../src/services/api/agent";
+import { ApiError } from "../src/services/api/request";
 
 // Exercise the production protocol, isolating only transport/storage dependencies.
 // Temporary modules avoid mock.module leaking into unrelated Bun test suites.
-const dir = mkdtempSync(join(tmpdir(), "agent-reliability-"));
+// Bun resolves temporary TypeScript modules relative to the package project;
+// keep the fixture under this test directory and remove it after the suite.
+const dir = mkdtempSync(join(fileURLToPath(new URL(".", import.meta.url)), ".agent-reliability-"));
 const root = new URL("../src/", import.meta.url);
 const requestPath = join(dir, "request.ts");
-writeFileSync(requestPath, 'export const apiBaseURL = "https://agent.invalid/api"; export const http = { post: async () => { throw new Error("unexpected POST"); } };');
+writeFileSync(requestPath, `export { ApiError } from ${JSON.stringify(fileURLToPath(new URL("services/api/request.ts", root)))}; export const apiBaseURL = "https://agent.invalid/api"; export const compactApiParams = (params) => Object.fromEntries(Object.entries(params).filter(([, value]) => value !== undefined)); export const http = { post: async () => { throw new Error("unexpected POST"); } };`);
 writeFileSync(join(dir, "agent.ts"), readFileSync(new URL("services/api/agent.ts", root), "utf8")
     .replace('"@/services/api/request"', JSON.stringify(requestPath))
     .replace('"@/services/api/task-text-stream"', JSON.stringify(fileURLToPath(new URL("services/api/task-text-stream.ts", root)))));
@@ -23,7 +25,7 @@ writeFileSync(join(dir, "conversations.ts"), readFileSync(new URL("services/clou
     .replace('"@/lib/localforage-storage"', JSON.stringify(storagePath))
     .replace('"@/lib/user-scope"', JSON.stringify(join(dir, "scope.ts")))
     .replace('"@/lib/markdown-plain-text"', JSON.stringify(fileURLToPath(new URL("lib/markdown-plain-text.ts", root)))));
-const conversations: typeof import("../src/services/cloud-agent-conversations") = await import(join(dir, "conversations.ts"));
+const conversations: typeof import("../src/services/cloud-agent-conversations") = await import(pathToFileURL(join(dir, "conversations.ts")).href);
 const storage = await import(storagePath);
 const nativeFetch = globalThis.fetch;
 const nativeTimer = globalThis.setTimeout;
@@ -49,6 +51,23 @@ const frame = (event: string, data: unknown) => `event: ${event}\ndata: ${JSON.s
 const snapshot = (status: string, extra = {}) => frame("run_snapshot", { id: "run", status, ...extra });
 const event = (seq: number) => frame("agent_event", { runId: "run", eventId: `run:${seq}`, seq, type: "tool_completed", payload: { nodeId: "node" } });
 const stream = (body: string) => new Response(body, { headers: { "content-type": "text/event-stream" } });
+
+describe("Agent session deletion", () => {
+    it("deletes the server session using its encoded ID without deleting runs or assets", async () => {
+        const requests: unknown[][] = [];
+        transport.http.delete = async (...args: unknown[]) => { requests.push(args); return { id: "session/id", deleted: true }; };
+        expect(typeof api.deleteAgentSession).toBe("function");
+        expect(await api.deleteAgentSession("session/id")).toEqual({ id: "session/id", deleted: true });
+        expect(requests).toEqual([["/agent/sessions/session%2Fid", { timeout: 15_000 }]]);
+    });
+
+    it("propagates an active-run rejection instead of reporting a successful deletion", async () => {
+        transport.http.delete = async () => { throw new Error("请先停止或等待任务结束"); };
+        expect(typeof api.deleteAgentSession).toBe("function");
+        await expect(api.deleteAgentSession("running-session")).rejects.toThrow("请先停止或等待任务结束");
+    });
+});
+
 function observe(options: { timeoutMs?: number; after?: number } = {}) {
     const events: AgentEvent[] = [];
     const statuses: string[] = [];
@@ -122,6 +141,14 @@ describe("Agent SSE recovery", () => {
         expect(await result.done).toBeUndefined();
         expect(cursors).toEqual(["0", "1", "1"]);
         expect(result.events.filter((e) => e.seq > 0).map((e) => e.seq)).toEqual([1, 2]);
+    });
+
+    it("keeps the terminal event watermark so consumers can recover missing task events", async () => {
+        globalThis.fetch = (async () => stream(event(1) + snapshot("completed", { revision: 9, eventCount: 3 }))) as typeof fetch;
+        const result = observe();
+        expect(await result.done).toBeUndefined();
+        expect(result.events.find((e) => e.type === "run_status")?.payload).toMatchObject({ status: "completed", eventCount: 3 });
+        expect(result.events.filter((e) => e.seq > 0).map((e) => e.seq)).toEqual([1]);
     });
 
     it("waits for durable cleanup after a terminal status", async () => {
@@ -199,6 +226,31 @@ describe("Agent admission replay and durable pending records", () => {
         transport.http.post = async () => { attempts++; throw { status: 400, retryable: false }; };
         await expect(api.createAgentRun(input)).rejects.toMatchObject({ status: 400 });
         expect(attempts).toBe(1);
+    });
+
+    it.each([
+        new ApiError("模型已停用", { status: 400 }),
+        new ApiError("上一轮 Agent 尚未结束", { status: 409, code: 409, reason: "canvas_agent_busy" }),
+    ])("a rejection after an ambiguous admission attempt cannot release the original request identity: %s", async (rejection) => {
+        let attempts = 0;
+        transport.http.post = async () => {
+            if (++attempts === 1) throw new ApiError("回执丢失", { status: 502 });
+            throw rejection;
+        };
+        const error = await api.createAgentRun(input).catch((error) => error);
+        expect(attempts).toBe(2);
+        expect(api.isAgentAdmissionRejection(error)).toBe(false);
+        expect(error.message).toContain("结果待确认");
+        expect(error.cause).toBe(rejection);
+    });
+
+    it("recognizes only explicit admission rejections, including business envelopes, not arbitrary conflicts", () => {
+        expect(api.isAgentAdmissionRejection(new ApiError("invalid", { status: 200, code: 400 }))).toBe(true);
+        expect(api.isAgentAdmissionRejection(new ApiError("custom", { status: 200, code: 40301 }))).toBe(false);
+        expect(api.isAgentAdmissionRejection(new ApiError("quota", { status: 403, code: 40301 }))).toBe(true);
+        expect(api.isAgentAdmissionRejection(new ApiError("busy", { status: 409, reason: "canvas_agent_busy" }))).toBe(true);
+        expect(api.isAgentAdmissionRejection(new ApiError("conflict", { status: 409 }))).toBe(false);
+        expect(api.isAgentAdmissionRejection(new ApiError("timeout", { status: 408 }))).toBe(false);
     });
 
     it("restores the full original request and message identity, isolated by conversation", async () => {

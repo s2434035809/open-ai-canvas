@@ -32,6 +32,12 @@ func (s *Service) buildAgentMemoryProposalChanges(userID string, input []model.A
 			seen[id] = true
 			sources = append(sources, current)
 		}
+		// 首页智能创作与画布记忆不互通：跨场景合并或改分类会污染另一侧的注入内容。
+		for _, source := range sources {
+			if (source.Category == "smart_creation") != (req.Category == "smart_creation") {
+				return false
+			}
+		}
 		next, err := s.buildUserAgentMemory(userID, req, model.AgentLessonStatusApproved)
 		if err != nil {
 			return false

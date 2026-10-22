@@ -35,7 +35,8 @@ func TestCloudAgentToolTableMatchesRuntimeDispatch(t *testing.T) {
 				t.Errorf("%s must use vision pipeline", name)
 			}
 		case p.Write():
-			if h.Write == nil || h.Preview == nil {
+			// 只读可保存的写类工具由显式分派执行，注册表只保留审批预演。
+			if (h.Write == nil && !p.SaveInReadOnly) || h.Preview == nil {
 				t.Errorf("%s requires both execution and approval preview", name)
 			}
 		default:

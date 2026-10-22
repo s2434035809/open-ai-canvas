@@ -65,10 +65,7 @@ function buildNav(features: FeatureAvailability, isAdmin: boolean, designEnabled
         },
         {
             heading: "资产与历史",
-            items: [
-                { ...toolItem("assets", "/assets"), title: "资产" },
-                ...(features.taskCenterEnabled ? [{ id: "tasks", title: "创作历史", icon: ImageIcon, to: "/tasks" }] : []),
-            ],
+            items: [{ ...toolItem("assets", "/assets"), title: "资产" }, ...(features.taskCenterEnabled ? [{ id: "tasks", title: "创作历史", icon: ImageIcon, to: "/tasks" }] : [])],
         },
     ];
 
@@ -139,7 +136,7 @@ function WorkspaceSwitcher({ collapsed, onNavigate }: { collapsed: boolean; onNa
     if (collapsed) {
         return (
             <div className="app-workspace-sidebar-brand-row relative shrink-0 flex items-center justify-center px-3 pt-3">
-                <Link to="/" onClick={onNavigate} className="app-workspace-sidebar-brand-button group" aria-label={`${appearance.brandName}首页`}>
+                <Link to="/" state={{ creationHome: true }} onClick={onNavigate} className="app-workspace-sidebar-brand-button group" aria-label={`${appearance.brandName}首页`}>
                     <BrandLogoFrame
                         className="app-workspace-brand-mark grid size-8 shrink-0 place-items-center rounded-[var(--r-sm)] shadow-sm"
                         logoClassName="size-5 object-contain"
@@ -153,7 +150,7 @@ function WorkspaceSwitcher({ collapsed, onNavigate }: { collapsed: boolean; onNa
 
     return (
         <div className="app-workspace-sidebar-brand-row relative shrink-0 px-3 pt-3">
-            <Link to="/" onClick={onNavigate} className="app-workspace-sidebar-brand-button group" aria-label={`${appearance.brandName}首页`}>
+            <Link to="/" state={{ creationHome: true }} onClick={onNavigate} className="app-workspace-sidebar-brand-button group" aria-label={`${appearance.brandName}首页`}>
                 <span className="flex min-w-0 items-center gap-2">
                     <BrandLogoFrame
                         className="app-workspace-brand-mark grid size-8 shrink-0 place-items-center rounded-[var(--r-sm)] shadow-sm"
@@ -358,7 +355,7 @@ export function workspaceNavActiveId(pathname: string, section?: string | null) 
     if (pathname.startsWith("/plugins/design")) return "design";
     if (segments[0] === "toolbox" && segments[1]) return `toolbox-${segments[1]}`;
     const slug = segments[0] || "home";
-    if (slug === "create") return "home";
+    if (slug === "create" || slug === "c") return "home";
     return slug === "settings" && section ? `settings:${section}` : slug;
 }
 

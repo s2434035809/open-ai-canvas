@@ -504,6 +504,7 @@
           "category": {
             "description": "只看某一类的索引",
             "enum": [
+              "smart_creation",
               "storyboard",
               "video",
               "image",

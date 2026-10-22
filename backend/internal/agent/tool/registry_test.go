@@ -90,12 +90,29 @@ func TestScopeAndApprovalDoNotGrantMediaInReadOnlyMode(t *testing.T) {
 	readOnly := Scope{Canvas: true, ReadOnly: true, IncludeProfile: true, Skills: true, Vision: true}
 	for _, name := range Names() {
 		p := Of(name)
-		if p.Write() && p.Allowed(readOnly) {
+		if p.Write() && p.Allowed(readOnly) && !p.SaveInReadOnly {
 			t.Errorf("%s writable in read_only", name)
 		}
 		if p.Media() && !p.ApprovalRequired("auto") {
 			t.Errorf("%s bypasses media approval in auto", name)
 		}
+	}
+	// 只读例外必须显式登记，且不能扩展到报价、建任务或媒体生成。
+	submit := Of(CommercePlanSubmit)
+	if !submit.SaveInReadOnly || !submit.Allowed(Scope{Creation: true, ReadOnly: true}) {
+		t.Fatal("read_only must still save the complete commerce plan")
+	}
+	if submit.Media() || submit.ApprovalRequired("read_only") {
+		t.Fatal("read_only save must not quote, approve or create tasks")
+	}
+	if Of(GenerateImageBatch).Allowed(Scope{Creation: true, Media: true, ReadOnly: true}) {
+		t.Fatal("read_only must not expose batch generation")
+	}
+	if Of(GenerateMedia).Allowed(Scope{Media: true, ReadOnly: true}) {
+		t.Fatal("read_only must not expose media generation")
+	}
+	if Of(CanvasApplyOps).Allowed(Scope{Canvas: true, ReadOnly: true}) {
+		t.Fatal("read_only must not expose canvas writes")
 	}
 	if Of(CanvasGetState).Allowed(Scope{IncludeProfile: true}) {
 		t.Fatal("unbound canvas read allowed")

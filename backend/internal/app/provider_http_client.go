@@ -263,6 +263,13 @@ func doBinary(req *http.Request) ([]byte, string, error) {
 // 不会绕过完整响应的大小上限或错误判定。
 func doBinaryWithConsumer(req *http.Request, onChunk func(string, []byte)) ([]byte, string, error) {
 	startedAt := time.Now()
+	if surface, agent := req.Context().Value(agentModelRequestMetricsKey{}).(string); agent && req.Method == http.MethodPost {
+		kind := providerRequestKindFromContext(req.Context())
+		if kind != "cache-create" && kind != "cache-delete" {
+			metadata, _ := req.Context().Value(providerAnalyticsKey{}).(providerAnalyticsContext)
+			log.Printf("agent model request: task_id=%s surface=%s request_bytes=%d", metadata.TaskID, surface, req.ContentLength)
+		}
+	}
 	requestTimeout := providerHTTPTimeout
 	if deadline, ok := req.Context().Deadline(); ok {
 		if remaining := time.Until(deadline); remaining > 0 {
@@ -555,6 +562,20 @@ func safeProviderLogError(err error) string {
 	var httpErr providerHTTPError
 	if errors.As(err, &httpErr) {
 		return fmt.Sprintf("上游 HTTP %d", httpErr.StatusCode)
+	}
+	// net/http wraps transport failures in url.Error, whose Error method includes
+	// the full request URL. Query strings may contain user supplied or provider
+	// credentials, so keep only the operation and nested transport reason.
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		if urlErr.Err == nil {
+			return strings.TrimSpace(urlErr.Op)
+		}
+		reason := safeProviderLogError(urlErr.Err)
+		if strings.TrimSpace(urlErr.Op) == "" {
+			return reason
+		}
+		return strings.TrimSpace(urlErr.Op) + ": " + reason
 	}
 	return truncateRunes(err.Error(), 500)
 }

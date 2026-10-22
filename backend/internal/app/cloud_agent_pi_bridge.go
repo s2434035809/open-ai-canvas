@@ -52,9 +52,9 @@ func strictRuntimeStringAliases(fields map[string]interface{}, label string, ali
 	return value, nil
 }
 
-func canonicalFromRuntimeMessages(messages []map[string]any, tools []map[string]interface{}, systemPrompt string) (canonicalAgentRequest, error) {
+func canonicalFromRuntimeMessages(messages []map[string]any, tools []map[string]interface{}, systemPrompt string, currentTurnContextIndex ...int) (canonicalAgentRequest, error) {
 	canonical := canonicalAgentRequest{Tools: tools, ToolChoice: "auto", SystemPrompt: systemPrompt}
-	for _, message := range messages {
+	for index, message := range messages {
 		switch stringField(message, "role") {
 		case "system":
 			if text := runtimeContentText(message["content"]); strings.TrimSpace(text) != "" {
@@ -69,7 +69,11 @@ func canonicalFromRuntimeMessages(messages []map[string]any, tools []map[string]
 				})
 			}
 		case "user":
-			canonical.Messages = append(canonical.Messages, map[string]interface{}{"role": "user", "content": runtimeUserContent(message["content"])})
+			converted := map[string]interface{}{"role": "user", "content": runtimeUserContent(message["content"])}
+			if len(currentTurnContextIndex) == 1 && currentTurnContextIndex[0] == index {
+				converted[cloudAgentContextSourceKey] = "creation_turn_context"
+			}
+			canonical.Messages = append(canonical.Messages, converted)
 		case "assistant":
 			text := ""
 			calls := []interface{}{}
@@ -305,12 +309,21 @@ func runtimeToolCalls(calls []cloudAgentCall) []map[string]any {
 // cloudAgentPiTool 工具调用桥接：所有工具都交给唯一的 Go 业务执行器
 // advanceCloudAgentTool（权限、审批、计费、画布写入都在那里治理）。
 func (s *Service) cloudAgentPiTool(ctx context.Context, userID, runID string, payload map[string]json.RawMessage) (any, error) {
+	var request struct {
+		CallID      string          `json:"callId"`
+		Name        string          `json:"name"`
+		ToolName    string          `json:"toolName"`
+		Arguments   json.RawMessage `json:"arguments"`
+		ReplayOnly  bool            `json:"replayOnly"`
+		RecoverOnly bool            `json:"recoverOnly"`
+		ParentRunID string          `json:"parentRunId"`
+	}
+	if err := decodePiPayload(payload, &request); err != nil {
+		return nil, err
+	}
 	callID, err := decodePiStringAliases(payload, "Pi 工具调用 ID", "callId", "call_id", "toolCallId", "tool_call_id", "id")
 	if err != nil {
 		return nil, err
-	}
-	if callID == "" {
-		return nil, errors.New("Pi 工具调用缺少 call id")
 	}
 	name, err := decodePiStringAliases(payload, "Pi 工具名称", "name", "toolName")
 	if err != nil {
@@ -318,10 +331,11 @@ func (s *Service) cloudAgentPiTool(ctx context.Context, userID, runID string, pa
 	}
 	var call cloudAgentCall
 	call.ID = callID
-	call.Function.Name = name
-	if raw, exists := payload["arguments"]; exists {
-		call.Function.Arguments = strings.TrimSpace(string(raw))
+	if call.ID == "" || len(call.ID) > 160 {
+		return nil, BadAuthRequest("工具调用缺少有效的固定标识")
 	}
+	call.Function.Name = name
+	call.Function.Arguments = strings.TrimSpace(string(request.Arguments))
 	if call.Function.Arguments == "" || call.Function.Arguments == "null" {
 		call.Function.Arguments = "{}"
 	}
@@ -336,7 +350,7 @@ func (s *Service) cloudAgentPiTool(ctx context.Context, userID, runID string, pa
 		// 按历史长度二选一，看到哪份不稳定。优先回放已保存回执，两边保持一致。
 		if run, loadErr := s.repo.CloudAgent(userID, runID); loadErr == nil {
 			if state, decodeErr := cloudAgentDecode(run); decodeErr == nil {
-				if content, ok := cloudAgentToolMessage(&state, call.ID); ok {
+				if content, ok := cloudAgentCurrentStepToolMessage(&state, call.ID); ok {
 					return cloudAgentPiToolResult(call, content), nil
 				}
 			}
@@ -345,13 +359,35 @@ func (s *Service) cloudAgentPiTool(ctx context.Context, userID, runID string, pa
 	}
 
 	// 工具白名单校验：拒绝未声明的工具调用
-	run, err := s.repo.CloudAgent(userID, runID)
+	run, err := s.ownedCloudAgent(ctx, userID, runID)
 	if err != nil {
 		return nil, err
 	}
-	state, err := cloudAgentDecode(run)
+	state, err := cloudAgentDecodeForExecution(run)
 	if err != nil {
 		return nil, err
+	}
+
+	if run.Status == "waiting_approval" || state.Approval != nil {
+		return nil, errCloudAgentAwaitingApproval
+	}
+	if request.ParentRunID != "" {
+		if !request.RecoverOnly || state.ParentID != request.ParentRunID || state.Request.Surface != "creation" {
+			return nil, NewAppError(409, "只允许核对本轮已停止父轮的回执")
+		}
+		parent, err := s.repo.CloudAgent(userID, request.ParentRunID)
+		if err != nil {
+			return nil, err
+		}
+		if (parent.Status != "rejected" && parent.Status != "cancelled" && parent.Status != "failed") || parent.CleanupPending || parent.SessionID != run.SessionID {
+			return nil, NewAppError(409, "父轮回执不属于当前会话")
+		}
+		// Read historical receipts across policy updates, without executing the old contract.
+		parentState, err := cloudAgentDecode(parent)
+		if err != nil {
+			return nil, err
+		}
+		return s.recoverCloudAgentPiTool(parent, &parentState, call, request.ReplayOnly)
 	}
 
 	allowedTools := make(map[string]bool)
@@ -368,42 +404,101 @@ func (s *Service) cloudAgentPiTool(ctx context.Context, userID, runID string, pa
 		log.Printf("[Agent] rejected undeclared tool call: %s in run %s", call.Function.Name, runID)
 		return nil, fmt.Errorf("未声明的工具: %s", call.Function.Name)
 	}
+	if run.Status == "waiting_approval" || state.Approval != nil {
+		return nil, errCloudAgentAwaitingApproval
+	}
+	if request.ReplayOnly || request.RecoverOnly {
+		return s.recoverCloudAgentPiTool(run, &state, call, request.ReplayOnly)
+	}
+	if err := s.validateCloudAgentPiDeclaredCall(run, &state, call); err != nil {
+		return nil, err
+	}
 
+	if !cloudAgentWrite(call.Function.Name) {
+		if content, ok := cloudAgentCommittedToolReplay(&state, call); ok {
+			return map[string]any{"content": content, "isError": cloudAgentToolContentIsError(content)}, nil
+		}
+	}
 	return s.executeCloudAgentRuntimeTool(ctx, userID, runID, call)
 }
 
 func (s *Service) executeCloudAgentRuntimeTool(ctx context.Context, userID, runID string, call cloudAgentCall) (any, error) {
 	executed := false
 	for attempt := 0; attempt < 8 && !executed; attempt++ {
-		run, err := s.repo.CloudAgent(userID, runID)
+		run, err := s.ownedCloudAgent(ctx, userID, runID)
 		if err != nil {
 			return nil, err
 		}
-		state, err := cloudAgentDecode(run)
+		// This helper is also called directly by recovery paths. Check the
+		// admitted execution contract before creating even a pending receipt.
+		initial, err := cloudAgentDecodeForExecution(run)
 		if err != nil {
 			return nil, err
 		}
-		// A runtime may retry the same /tool request after the bridge response was
-		// lost. Replay the committed result before inspecting CallIndex: the
-		// executor may already have advanced to the next call or completed the run.
-		if content, ok := cloudAgentToolMessage(&state, call.ID); ok {
-			return cloudAgentPiToolResult(call, content), nil
+		if run.Status == "waiting_approval" {
+			return nil, errCloudAgentAwaitingApproval
+		}
+		if initial.Approval != nil {
+			// Approval arguments may include server-normalized asset text. The
+			// original request digest is checked against its durable receipt below.
+			if initial.Approval.Decision != "approve" || !cloudAgentWrite(call.Function.Name) || initial.Approval.Call.ID != call.ID || initial.Approval.Call.Function.Name != call.Function.Name {
+				return nil, errCloudAgentAwaitingApproval
+			}
+		}
+		if !cloudAgentWrite(call.Function.Name) {
+			if content, ok := cloudAgentCommittedToolReplay(&initial, call); ok {
+				return map[string]any{"content": content, "isError": cloudAgentToolContentIsError(content)}, nil
+			}
+			for _, admitted := range initial.Calls {
+				if admitted.ID == call.ID {
+					want, wantErr := cloudAgentCallDigest(call)
+					got, gotErr := cloudAgentCallDigest(admitted)
+					if wantErr != nil || gotErr != nil || want != got || admitted.Function.Name != call.Function.Name {
+						return nil, NewAppError(409, "同一工具调用标识不能用于不同参数")
+					}
+				}
+			}
+		}
+		if cloudAgentWrite(call.Function.Name) {
+			receipt, err := s.prepareCloudAgentWriteReceipt(run, call)
+			if errors.Is(err, repository.ErrCreationConflict) {
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			if receipt.Status == "committed" {
+				return cloudAgentReceiptResponse(receipt)
+			}
+			if receipt.Status != "pending" {
+				return nil, NewAppError(409, "工具提交结果需要核对，未自动重发")
+			}
+			run, err = s.ownedCloudAgent(ctx, userID, runID)
+			if err != nil {
+				return nil, err
+			}
 		}
 		if cloudAgentRunTerminal(run.Status) {
 			return nil, fmt.Errorf("run already terminated")
 		}
+		state, err := cloudAgentDecodeForExecution(run)
+		if err != nil {
+			return nil, err
+		}
 		if state.StepLimits, err = s.cloudAgentStepLimits(); err != nil {
 			return nil, err
 		}
-		if state.CallIndex < 0 || state.CallIndex >= len(state.Calls) {
-			return nil, fmt.Errorf("工具调用 %q 没有对应的模型工具调用", call.ID)
+		if !cloudAgentWrite(call.Function.Name) {
+			state.Calls = []cloudAgentCall{call}
+			state.CallIndex = 0
+			state.Approval = nil
+		} else if state.CallIndex >= len(state.Calls) || state.Calls[state.CallIndex].ID != call.ID {
+			return nil, NewAppError(409, "工具恢复记录不一致，未自动重发")
 		}
-		expected := state.Calls[state.CallIndex]
-		if !cloudAgentToolCallsEquivalent(expected, call) {
-			return nil, fmt.Errorf("工具调用 %q 与模型声明的工具调用不一致", call.ID)
-		}
-		state.Approval = nil
 		err = s.advanceCloudAgentTool(run, &state)
+		if errors.Is(err, errCloudAgentReceiptReplay) {
+			continue
+		}
 		if errors.Is(err, repository.ErrCreationConflict) {
 			time.Sleep(time.Duration(attempt+1) * 20 * time.Millisecond)
 			continue
@@ -422,6 +517,16 @@ func (s *Service) executeCloudAgentRuntimeTool(ctx context.Context, userID, runI
 		if err != nil {
 			return nil, err
 		}
+		run.ExecutionFence = cloudAgentFence(ctx)
+		if run.Status == "completed" || run.Status == "failed" {
+			// The same tool still needs its committed question or failure result.
+			// Only this terminal read retains the original owner and lease.
+			if err := s.repo.CheckCloudAgentPiSnapshotOwner(run, cloudAgentFence(ctx)); err != nil {
+				return nil, err
+			}
+		} else if err := s.repo.CheckCloudAgentOwner(run, cloudAgentFence(ctx)); err != nil {
+			return nil, err
+		}
 		state, err := cloudAgentDecode(run)
 		if err != nil {
 			return nil, err
@@ -429,19 +534,32 @@ func (s *Service) executeCloudAgentRuntimeTool(ctx context.Context, userID, runI
 		if run.Status == "waiting_approval" && state.Approval != nil {
 			return map[string]any{"pause": true, "approvalId": state.Approval.ID, "content": "操作正在等待用户审批。"}, nil
 		}
+		if content, ok := cloudAgentCurrentStepToolMessage(&state, call.ID); ok {
+			if trimmed := strings.TrimSpace(content); trimmed == "" || trimmed == "null" {
+				content = `{"error":"工具没有返回结果"}`
+			}
+			result := map[string]any{"content": content, "isError": cloudAgentToolContentIsError(content)}
+			if cloudAgentRunTerminal(run.Status) {
+				// Persist the paired result without another model call after termination.
+				result["terminate"] = true
+			}
+			return result, nil
+		}
 		if cloudAgentRunTerminal(run.Status) && run.Status != "completed" {
 			return nil, fmt.Errorf("%s", firstNonEmpty(run.FailureMessage, "Agent 工具执行失败"))
 		}
-		if content, ok := cloudAgentToolMessage(&state, call.ID); ok {
-			return cloudAgentPiToolResult(call, content), nil
-		}
-		if state.MediaTaskID == "" {
+		if !cloudAgentMediaPending(&state) {
 			return nil, fmt.Errorf("tool %s produced no result", call.Function.Name)
 		}
-		if _, err := s.waitCloudAgentTask(ctx, state.MediaTaskID); err != nil && ctx.Err() != nil {
-			return nil, ctx.Err()
+		if _, err := s.waitCloudAgentMediaTask(ctx, userID, runID, state.MediaTaskID); err != nil {
+			return nil, err
 		}
-		if err := s.settleCloudAgentMedia(userID, runID); err != nil {
+		for _, taskID := range state.CreationPendingImages {
+			if _, err := s.waitCloudAgentTask(ctx, taskID); err != nil && ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+		}
+		if err := s.settleCloudAgentMedia(userID, runID, cloudAgentFence(ctx)); err != nil {
 			return nil, err
 		}
 	}
@@ -482,26 +600,75 @@ func cloudAgentPiToolResult(call cloudAgentCall, content string) map[string]any 
 
 // settleCloudAgentMedia 在媒体任务结束后用唯一的业务执行器回写画布、记录工具结果并释放
 // MediaTaskID。任务仍在生成时直接返回；并发写冲突时重读重试。
-func (s *Service) settleCloudAgentMedia(userID, runID string) error {
+func (s *Service) settleCloudAgentMedia(userID, runID string, fences ...*model.CloudAgentFence) error {
 	for attempt := 0; attempt < 8; attempt++ {
 		latest, err := s.repo.CloudAgent(userID, runID)
 		if err != nil {
 			return err
 		}
+		cloudAgentBindFence(latest, fences)
 		fresh, err := cloudAgentDecode(latest)
 		if err != nil {
 			return err
 		}
-		if fresh.MediaTaskID == "" || fresh.CallIndex >= len(fresh.Calls) {
+		if cloudAgentRunTerminal(latest.Status) || !cloudAgentMediaPending(&fresh) || fresh.CallIndex >= len(fresh.Calls) {
 			return nil
 		}
-		err = s.advanceCloudAgentMedia(latest, &fresh, fresh.Calls[fresh.CallIndex])
+		call := fresh.Calls[fresh.CallIndex]
+		if cloudAgentCommerceBatchCall(call.Function.Name) {
+			batch := fresh.CommerceBatch
+			if batch == nil && fresh.Approval != nil && fresh.Approval.Batch != nil {
+				batch = fresh.Approval.Batch
+			}
+			err = s.advanceCloudAgentCommerceBatch(latest, &fresh, call, batch)
+		} else {
+			err = s.advanceCloudAgentMedia(latest, &fresh, call)
+		}
 		if !errors.Is(err, repository.ErrCreationConflict) {
 			return err
 		}
 		time.Sleep(time.Duration(attempt+1) * 20 * time.Millisecond)
 	}
 	return repository.ErrCreationConflict
+}
+
+// 回放仅匹配最近一条 assistant 之后的结果，避免复用 call ID 时读到旧步骤。
+func cloudAgentCurrentStepToolMessage(state *cloudAgentRuntime, callID string) (string, bool) {
+	for index := len(state.Canonical.Messages) - 1; index >= 0; index-- {
+		message := state.Canonical.Messages[index]
+		if stringField(message, "role") == "assistant" {
+			break
+		}
+		if stringField(message, "role") == "tool" && stringField(message, "tool_call_id") == callID {
+			return stringField(message, "content"), true
+		}
+	}
+	return "", false
+}
+
+func cloudAgentCommittedToolReplay(state *cloudAgentRuntime, call cloudAgentCall) (string, bool) {
+	want, err := cloudAgentCallDigest(call)
+	if err != nil || state == nil {
+		return "", false
+	}
+	// Pi 的 /model 请求先落库，assistant 的工具调用随后到达；执行器保留的
+	// admitted call 与其完成索引，才是"这一步确实已提交"的凭据。
+	matched := false
+	for index, original := range state.Calls {
+		if original.ID != call.ID {
+			continue
+		}
+		digest, err := cloudAgentCallDigest(original)
+		if err != nil || index >= state.CallIndex || original.Function.Name != call.Function.Name || digest != want {
+			return "", false
+		}
+		matched = true
+		break
+	}
+	if !matched {
+		return "", false
+	}
+	return cloudAgentCurrentStepToolMessage(state, call.ID)
 }
 
 func cloudAgentToolMessage(state *cloudAgentRuntime, callID string) (string, bool) {
@@ -660,22 +827,6 @@ func (s *Service) handlePiSessionSnapshot(userID, runID string, data map[string]
 func stateCanonicalFromInput(input map[string]any) canonicalAgentRequest {
 	canonical, _ := canonicalAgentRequestFromInput(input)
 	return canonical
-}
-
-func canonicalAgentRequestFromInput(input map[string]any) (canonicalAgentRequest, bool) {
-	requests, ok := input["agentRequests"].(map[string]any)
-	if !ok || requests["canonical"] == nil {
-		return canonicalAgentRequest{}, false
-	}
-	raw, err := json.Marshal(requests["canonical"])
-	if err != nil {
-		return canonicalAgentRequest{}, false
-	}
-	var canonical canonicalAgentRequest
-	if err := json.Unmarshal(raw, &canonical); err != nil {
-		return canonicalAgentRequest{}, false
-	}
-	return canonical, true
 }
 
 func piToolDefinitions(source []map[string]interface{}) []map[string]any {

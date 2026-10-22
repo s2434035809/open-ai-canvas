@@ -114,7 +114,7 @@ func TestCloudAgentPixelImageReferenceReachesApproval(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Logf("requested=%q normalized=%q resolved=%q capability=%q", tc.size, plan.Args.Size, resolved["config"].(map[string]any)["size"], resolved["capabilityOptions"].(map[string]any)["size"])
-			if err := applyCloudAgentResolvedMediaDefaults(&req, plan, task); err != nil {
+			if err := s.applyCloudAgentResolvedMediaDefaults(&req, plan, task); err != nil {
 				t.Errorf("legal preset blocked before approval: %v", err)
 			}
 			if err := s.advanceCloudAgentByID("user", run.ID); err != nil {
@@ -189,7 +189,7 @@ func TestCloudAgentImageApprovalDoesNotEquatePixelTiers(t *testing.T) {
 	for _, requested := range []string{"1424x800", "2048x1152", "2816x1584", "3840x2160", "3584x2016"} {
 		for _, resolved := range []string{"1424x800", "2048x1152", "2816x1584", "3840x2160", "3584x2016"} {
 			input := map[string]any{"mode": "image", "config": map[string]any{"size": resolved}, "capabilityOptions": map[string]any{"size": resolved}}
-			err := validateCloudAgentResolvedMediaOptions(map[string]any{"size": requested}, input)
+			err := validateCloudAgentResolvedMediaOptions(map[string]any{"size": requested}, input, nil)
 			if (err == nil) != (requested == resolved) {
 				t.Fatalf("pixel presets confused: requested=%s resolved=%s err=%v", requested, resolved, err)
 			}

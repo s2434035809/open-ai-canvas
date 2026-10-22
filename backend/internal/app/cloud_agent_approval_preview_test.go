@@ -111,7 +111,7 @@ func TestCloudAgentCanvasApprovalPreviewDescribesConnectionsAndMixedOperations(t
 	}
 }
 
-func TestCloudAgentCanvasApprovalPreviewRejectsUnknownTargetInsteadOfFallingBack(t *testing.T) {
+func TestCloudAgentCanvasApprovalPreviewTreatsUnknownTargetAsArgumentError(t *testing.T) {
 	doc, err := creationDocument(`{"nodes":[],"connections":[]}`)
 	if err != nil {
 		t.Fatal(err)
@@ -119,10 +119,6 @@ func TestCloudAgentCanvasApprovalPreviewRejectsUnknownTargetInsteadOfFallingBack
 	_, err = applyCloudAgentCanvasPlan(doc, []agentCanvasOp{{
 		Type: "update_node", ID: "missing", Patch: map[string]any{"title": "不能静默写入"},
 	}})
-	if err == nil || !strings.Contains(err.Error(), "只能更新现有") {
-		t.Fatalf("unknown target was not rejected: %v", err)
-	}
-	// 不存在的节点 ID 是可恢复的参数错误，不能把整轮 Agent 判为失败。
 	var fieldErr *cloudAgentFieldArgumentError
 	if !errors.As(err, &fieldErr) || fieldErr.Field != "ops[0].id" || fieldErr.Issue != "not_found" {
 		t.Fatalf("unknown target should be a repairable field error on ops[0].id, got %v", err)
@@ -130,6 +126,25 @@ func TestCloudAgentCanvasApprovalPreviewRejectsUnknownTargetInsteadOfFallingBack
 	var argumentErr *cloudAgentArgumentError
 	if !errors.As(err, &argumentErr) {
 		t.Fatalf("unknown target should unwrap to cloudAgentArgumentError, got %v", err)
+	}
+}
+
+func TestCloudAgentCanvasApprovalPreviewKeepsProtectedTargetsNonRepairable(t *testing.T) {
+	for _, raw := range []string{
+		`{"nodes":[{"id":"target","type":"image","metadata":{"locked":true}}],"connections":[]}`,
+		`{"nodes":[{"id":"target","type":"panorama","metadata":{}}],"connections":[]}`,
+	} {
+		doc, err := creationDocument(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = applyCloudAgentCanvasPlan(doc, []agentCanvasOp{{
+			Type: "update_node", ID: "target", Patch: map[string]any{"title": "禁止写入"},
+		}})
+		var argumentErr *cloudAgentArgumentError
+		if err == nil || errors.As(err, &argumentErr) {
+			t.Fatalf("protected target must remain a non-repairable rejection: %v", err)
+		}
 	}
 }
 

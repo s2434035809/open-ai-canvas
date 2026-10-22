@@ -72,9 +72,26 @@ func buildCloudAgentRegistry() *agenttool.Registry[cloudAgentToolHandler] {
 	return registry
 }
 
+// cloudAgentRequestToolScope normalizes surface-specific visibility before the
+// policy check. Creation runs have no canvas scope and never expose the profile
+// tool; their media capability comes from the selected creation media settings.
+func cloudAgentRequestToolScope(req CloudAgentRequest, profile bool) agenttool.Scope {
+	if req.Surface == "creation" {
+		profile = false
+		req.ContextScope = nil
+	}
+	return cloudAgentToolScope(req, profile)
+}
+
 func cloudAgentToolScope(req CloudAgentRequest, profile bool) agenttool.Scope {
+	creation := req.Surface == "creation"
+	media := len(req.ContextScope) > 0
+	if creation {
+		media = req.MediaSettings != nil && (req.MediaSettings.Image != nil || req.MediaSettings.Video != nil)
+	}
 	return agenttool.Scope{
-		Canvas: len(req.ContextScope) > 0, Skills: len(req.SkillIDs) > 0,
-		Vision: req.VisionEnabled, ReadOnly: req.PermissionMode == "read_only", IncludeProfile: profile,
+		Canvas: len(req.ContextScope) > 0, Creation: creation, Media: media,
+		Skills: len(req.SkillIDs) > 0, Vision: req.VisionEnabled,
+		ReadOnly: req.PermissionMode == "read_only", IncludeProfile: profile,
 	}
 }

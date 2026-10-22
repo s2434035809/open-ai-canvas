@@ -49,11 +49,18 @@ type Policy struct {
 	OffsetDefaults []string
 	// Vision 表示工具把图片交给模型，读循环收敛时与只读工具一起收起。
 	Vision bool
-	// RequiresCanvas / RequiresSkills / RequiresWriteMode are visibility gates,
-	// not grants of business authorization. Execution still validates ownership.
+	// RequiresCanvas / RequiresCreation / RequiresMedia / RequiresSkills /
+	// RequiresWriteMode are visibility gates, not grants of business
+	// authorization. Execution still validates ownership.
 	RequiresCanvas    bool
+	RequiresCreation  bool
+	RequiresMedia     bool
 	RequiresSkills    bool
 	RequiresWriteMode bool
+	// SaveInReadOnly marks the one control tool that still records its result in
+	// read_only mode. It grants no generation, billing or canvas mutation: the
+	// tool's policy Kind stays KindWrite, so execution paths keep write semantics.
+	SaveInReadOnly bool
 	// OutsideTransaction performs storage IO before the checkpoint transaction.
 	OutsideTransaction bool
 }
@@ -61,6 +68,8 @@ type Policy struct {
 // Scope contains server-derived capabilities for this run, never model claims.
 type Scope struct {
 	Canvas         bool
+	Creation       bool
+	Media          bool
 	Skills         bool
 	Vision         bool
 	ReadOnly       bool
@@ -70,9 +79,11 @@ type Scope struct {
 func (p Policy) Allowed(scope Scope) bool {
 	return p.Name != "" &&
 		(!p.RequiresCanvas || scope.Canvas) &&
+		(!p.RequiresCreation || scope.Creation) &&
+		(!p.RequiresMedia || scope.Media) &&
 		(!p.RequiresSkills || scope.Skills) &&
 		(!p.Vision || scope.Vision) &&
-		(!p.Write() && !p.RequiresWriteMode || !scope.ReadOnly) &&
+		(!p.Write() && !p.RequiresWriteMode || !scope.ReadOnly || p.SaveInReadOnly) &&
 		(p.Name != AgentProfileRead || scope.IncludeProfile)
 }
 
@@ -124,6 +135,11 @@ const (
 	CanvasApplyOps         = "canvas_apply_ops"
 	CanvasArrangeNodes     = "canvas_arrange_nodes"
 	GenerateMedia          = "generate_media"
+	LoadCreationWorkflow   = "load_creation_workflow"
+	CreationMediaRead      = "creation_media_read"
+	CommercePlanSubmit     = "commerce_plan_submit"
+	CommercePlanWait       = "commerce_plan_wait"
+	GenerateImageBatch     = "generate_image_batch"
 )
 
 var offsets = []string{"offset", "connectionOffset", "storyboardOffset"}
@@ -161,7 +177,7 @@ func policies() []Policy {
 		{Name: ImageAnnotationRender, Kind: KindPrepare, RequiresCanvas: true, OutsideTransaction: true},
 		{Name: SkillReadFile, Kind: KindRead, Cacheable: true, CacheScope: CacheSkillVersion, OffsetDefaults: offsets, RequiresSkills: true, OutsideTransaction: true},
 		{Name: SkillSearch, Kind: KindRead, RequiresSkills: true},
-		{Name: TaskGet, Kind: KindRead},
+		{Name: TaskGet, Kind: KindRead, OutsideTransaction: true},
 		{Name: CanvasInspectImage, Kind: KindPrepare, Vision: true, RequiresCanvas: true},
 		{Name: RecallLessons, Kind: KindRead},
 		{Name: RememberLesson, Kind: KindControl, RequiresWriteMode: true},
@@ -173,7 +189,13 @@ func policies() []Policy {
 		{Name: CanvasEditBatchTable, Kind: KindWrite, RequiresCanvas: true},
 		{Name: CanvasApplyOps, Kind: KindWrite, RequiresCanvas: true},
 		{Name: CanvasArrangeNodes, Kind: KindWrite, RequiresCanvas: true},
-		{Name: GenerateMedia, Kind: KindMedia, RequiresCanvas: true},
+		{Name: GenerateMedia, Kind: KindMedia, RequiresMedia: true},
+		{Name: LoadCreationWorkflow, Kind: KindRead, RequiresCreation: true},
+		{Name: CreationMediaRead, Kind: KindRead, RequiresCreation: true, OutsideTransaction: true},
+		// 只读模式仍要保存完整方案（不报价、不建任务），因此显式豁免写模式门槛。
+		{Name: CommercePlanSubmit, Kind: KindWrite, RequiresCreation: true, RequiresWriteMode: true, SaveInReadOnly: true},
+		{Name: CommercePlanWait, Kind: KindControl, RequiresCreation: true, RequiresWriteMode: true},
+		{Name: GenerateImageBatch, Kind: KindMedia, RequiresCreation: true, RequiresMedia: true},
 	}
 }
 
