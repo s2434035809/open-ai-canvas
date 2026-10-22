@@ -26,6 +26,47 @@ func TestCurrentSchemaVersionMatchesMigrationPlan(t *testing.T) {
 	}
 }
 
+type channelModelProtocolV58 struct {
+	ID       string `gorm:"primaryKey;size:36"`
+	Protocol string `gorm:"size:32;index"`
+}
+
+func (channelModelProtocolV58) TableName() string { return "channel_models" }
+
+func TestMigrateChannelModelProtocolLengthPreservesExistingRows(t *testing.T) {
+	db, err := Open(Config{Driver: "sqlite", DSN: "file:migration-channel-protocol-length?mode=memory&cache=shared"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&channelModelProtocolV58{}); err != nil {
+		t.Fatal(err)
+	}
+	legacy := channelModelProtocolV58{ID: "existing", Protocol: "chat-completion"}
+	if err := db.Create(&legacy).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateChannelModelProtocolLength(db); err != nil {
+		t.Fatalf("migrateChannelModelProtocolLength() error = %v", err)
+	}
+	statement := &gorm.Statement{DB: db}
+	if err := statement.Parse(&model.ChannelModel{}); err != nil {
+		t.Fatal(err)
+	}
+	protocolField := statement.Schema.LookUpField("Protocol")
+	if protocolField == nil || protocolField.Size != 64 {
+		t.Fatalf("protocol field size = %#v, want 64", protocolField)
+	}
+	var stored struct {
+		Protocol string
+	}
+	if err := db.Table("channel_models").Select("protocol").Where("id = ?", legacy.ID).Scan(&stored).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.Protocol != legacy.Protocol {
+		t.Fatalf("existing protocol = %q, want %q", stored.Protocol, legacy.Protocol)
+	}
+}
+
 func TestMigrateSchemaRecordsAndValidatesVersion(t *testing.T) {
 	db, err := Open(Config{Driver: "sqlite", DSN: "file:migration-version?mode=memory&cache=shared"})
 	if err != nil {
@@ -889,12 +930,12 @@ func TestToolsUpgradeFromMain29PreservesMigrationChecksums(t *testing.T) {
 	}
 }
 
-func TestMigrateSchemaNormalizesLegacyDesignDocumentsV58ToV59(t *testing.T) {
+func TestMigrateSchemaNormalizesLegacyDesignDocumentsV58ToV60(t *testing.T) {
 	db, err := Open(Config{Driver: "sqlite", DSN: "file:migration-design-legacy-v58?mode=memory&cache=shared"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&schemaMigration{}, &model.DesignDocument{}); err != nil {
+	if err := db.AutoMigrate(&schemaMigration{}, &model.DesignDocument{}, &model.ChannelModel{}); err != nil {
 		t.Fatal(err)
 	}
 	for _, item := range schemaMigrations {
@@ -931,6 +972,13 @@ func TestMigrateSchemaNormalizesLegacyDesignDocumentsV58ToV59(t *testing.T) {
 	if upstream.Name != "agent_memory_proposals" || upstream.Checksum != "sha256:agent-memory-proposals-v58" {
 		t.Fatalf("v58 must be upstream agent_memory_proposals: %#v", upstream)
 	}
+	var protocol schemaMigration
+	if err := db.First(&protocol, "version = ?", 59).Error; err != nil {
+		t.Fatalf("upstream v59 migration missing after normalization: %v", err)
+	}
+	if protocol.Name != "channel_model_protocol_length" {
+		t.Fatalf("v59 must be upstream channel_model_protocol_length: %#v", protocol)
+	}
 	status, err := ReadSchemaStatus(db)
 	if err != nil {
 		t.Fatal(err)
@@ -960,8 +1008,8 @@ func TestMigrateSchemaKeepsUpstreamAgentMemoryProposalsV58(t *testing.T) {
 	}
 }
 
-func TestMigrateSchemaRejectsConflictingDesignDocumentsV59(t *testing.T) {
-	db, err := Open(Config{Driver: "sqlite", DSN: "file:migration-design-conflict-v59?mode=memory&cache=shared"})
+func TestMigrateSchemaRejectsConflictingDesignDocumentsV60(t *testing.T) {
+	db, err := Open(Config{Driver: "sqlite", DSN: "file:migration-design-conflict-v60?mode=memory&cache=shared"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -977,8 +1025,8 @@ func TestMigrateSchemaRejectsConflictingDesignDocumentsV59(t *testing.T) {
 		}
 	}
 	for _, record := range []schemaMigration{
-		{Version: 58, Name: "design_documents", Checksum: legacyDesignDocumentsChecksum, AppliedAt: time.Now().UTC()},
-		{Version: 59, Name: "unexpected_migration", Checksum: "sha256:unexpected-v59", AppliedAt: time.Now().UTC()},
+		{Version: 59, Name: "design_documents", Checksum: designDocumentsChecksum, AppliedAt: time.Now().UTC()},
+		{Version: 60, Name: "unexpected_migration", Checksum: "sha256:unexpected-v60", AppliedAt: time.Now().UTC()},
 	} {
 		copied := record
 		if err := db.Create(&copied).Error; err != nil {
@@ -1014,7 +1062,7 @@ func TestMigrateSchemaRepairsHalfAppliedDesignDocumentsV58Alias(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&schemaMigration{}, &model.DesignDocument{}); err != nil {
+	if err := db.AutoMigrate(&schemaMigration{}, &model.DesignDocument{}, &model.ChannelModel{}); err != nil {
 		t.Fatal(err)
 	}
 	for _, item := range schemaMigrations {
@@ -1051,6 +1099,13 @@ func TestMigrateSchemaRepairsHalfAppliedDesignDocumentsV58Alias(t *testing.T) {
 	}
 	if design.Name != "design_documents" || design.Checksum != designDocumentsChecksum {
 		t.Fatalf("unexpected design migration record: %#v", design)
+	}
+	var protocol schemaMigration
+	if err := db.First(&protocol, "version = ?", 59).Error; err != nil {
+		t.Fatalf("upstream v59 migration missing after alias cleanup: %v", err)
+	}
+	if protocol.Name != "channel_model_protocol_length" {
+		t.Fatalf("v59 must be upstream channel_model_protocol_length: %#v", protocol)
 	}
 	var aliasCount int64
 	if err := db.Model(&schemaMigration{}).Where("version = 58 AND name = ?", "design_documents").Count(&aliasCount).Error; err != nil {
