@@ -498,6 +498,89 @@ func TestNewAPIVideoGenerationsParsesNestedVideoResults(t *testing.T) {
 	}
 }
 
+func TestOfficialMaxForAIVideoProfilesUseDocumentedFields(t *testing.T) {
+	profiles := []struct {
+		id, createPath, pollPath string
+	}{
+		{id: "maxforai-videos", createPath: "/videos", pollPath: "/videos/task-maxforai"},
+		{id: "maxforai-video-generations", createPath: "/video/generations", pollPath: "/video/generations/task-maxforai"},
+	}
+	request := GenerationRequest{
+		Model: "官转sd2.5", Prompt: "角色 @image1 动作 @video1 配音 @audio1", Duration: 6,
+		AspectRatio: "16:9", Resolution: "720p", GenerateAudio: false,
+		Images: []MediaReference{{URL: "https://cdn.example/image.png", Order: 1}},
+		Videos: []MediaReference{{URL: "https://cdn.example/video.mp4", Order: 1}},
+		Audios: []MediaReference{{URL: "https://cdn.example/audio.mp3", Order: 1}},
+		Extra:  map[string]any{"idempotencyKey": "request-maxforai-1"},
+	}
+	for _, profile := range profiles {
+		t.Run(profile.id, func(t *testing.T) {
+			adapter := officialPackageAdapter(t, "maxforai-video.yingce-plugin", profile.id)
+			create, err := adapter.BuildCreate(context.Background(), RequestContext{Request: request})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if create.Method != "POST" || create.Path != profile.createPath || create.Headers["Idempotency-Key"] != "request-maxforai-1" {
+				t.Fatalf("create spec = %#v", create)
+			}
+			body := manifestTestBody(t, create)
+			if body["model"] != request.Model || body["prompt"] != request.Prompt || body["duration"] != float64(6) || body["ratio"] != "16:9" || body["resolution"] != "720p" || body["generate_audio"] != false {
+				t.Fatalf("request body = %#v", body)
+			}
+			for key, want := range map[string]string{"images": request.Images[0].URL, "videos": request.Videos[0].URL, "audios": request.Audios[0].URL} {
+				values, ok := body[key].([]any)
+				if !ok || len(values) != 1 || values[0] != want {
+					t.Errorf("%s = %#v, want [%q]", key, body[key], want)
+				}
+			}
+			for _, forbidden := range []string{"input", "parameters", "image_urls", "video_urls", "audio_urls", "seconds", "aspect_ratio"} {
+				if _, exists := body[forbidden]; exists {
+					t.Errorf("request contains unsupported wrapper field %q: %#v", forbidden, body)
+				}
+			}
+
+			poll, err := adapter.BuildPoll(context.Background(), PollContext{Request: request, TaskID: "task-maxforai"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if poll.Method != "GET" || poll.Path != profile.pollPath {
+				t.Fatalf("poll spec = %#v", poll)
+			}
+			pollPayload := `{"id":"task-maxforai","status":"completed","metadata":{"url":"https://cdn.example/result.mp4"}}`
+			if profile.id == "maxforai-video-generations" {
+				pollPayload = `{"code":"success","data":{"task_id":"task-maxforai","status":"completed","result_url":"https://cdn.example/result.mp4"}}`
+			}
+			state, err := adapter.ParsePoll(context.Background(), PollContext{Request: request, TaskID: "task-maxforai"}, []byte(pollPayload))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state.Status != StatusSucceeded || state.Result == nil || len(state.Result.Videos) != 1 || state.Result.Videos[0].URL != "https://cdn.example/result.mp4" {
+				t.Fatalf("poll result = %#v", state)
+			}
+
+			invalid := request
+			invalid.Images = make([]MediaReference, 31)
+			if _, err := adapter.BuildCreate(context.Background(), RequestContext{Request: invalid}); err == nil {
+				t.Fatal("accepted more than 30 images")
+			}
+			invalid = request
+			invalid.Duration = 21
+			if _, err := adapter.BuildCreate(context.Background(), RequestContext{Request: invalid}); err == nil {
+				t.Fatal("accepted a duration over 20 seconds with a video reference")
+			}
+			defaultDuration := request
+			defaultDuration.Duration = 0
+			dft, err := adapter.BuildCreate(context.Background(), RequestContext{Request: defaultDuration})
+			if err != nil {
+				t.Fatalf("omitted duration should use the upstream default: %v", err)
+			}
+			if got := manifestTestBody(t, dft)["duration"]; got != float64(6) {
+				t.Fatalf("default duration = %#v, want 6", got)
+			}
+		})
+	}
+}
+
 func TestOfficialOpenAIVideosDeclaresAuthenticatedResultDownload(t *testing.T) {
 	adapter := officialPackageAdapter(t, "openai-videos.yingce-plugin", "newapi")
 	capability, ok := adapter.(ResultCapability)

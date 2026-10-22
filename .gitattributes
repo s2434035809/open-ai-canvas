@@ -1,1 +1,4 @@
 plugin-packages/*.sh text eol=lf
+# CHANGELOG 是「两边都往顶部追加」的写法，默认合并必然在发布边界处冲突。
+# union 策略保留双方条目，让 dev 追加段与上游发布段并存。
+CHANGELOG.md merge=union
