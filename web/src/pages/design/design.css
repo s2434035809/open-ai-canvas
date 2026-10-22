@@ -1,8 +1,8 @@
 /**
  * 设计工作台页面局部样式。
  *
- * .ds-shell 只作用于设计工作台子树，不外泄到全局主题；与 pages/portfolio/portfolio.css
- * 同一套做法（页面自己 import，根类作用域）。P0 骨架阶段只有空态，编辑器样式后续追加至此。
+ * .ds-shell 只作用于设计工作台子树，不外泄到全局主题：页面自己 import，
+ * 根类作用域限定。骨架阶段只有空态，编辑器自身的令牌不在这里重复定义。
  */
 
 .ds-shell .ds-empty {
@@ -28,4 +28,9 @@
     font-size: 13px;
     line-height: 1.7;
     color: var(--muted-foreground, rgba(0, 0, 0, 0.55));
+}
+
+/* 空态里的主行动按钮：与上方说明文字拉开距离，不贴在一起。 */
+.ds-shell .ds-empty .ant-btn {
+    margin-top: 8px;
 }

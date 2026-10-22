@@ -7,6 +7,12 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?请先运行一键部署脚本生成数据库密码}
     volumes:
       - ${CANVAS_POSTGRES_DATA_PATH:-postgres-data}:/var/lib/postgresql/data
+    # 老内核（CentOS 7 / 3.10）配旧 libseccomp 时，Docker 默认 seccomp 会把 pwritev2
+    # 误判为 EPERM（本应为 ENOSYS），PostgreSQL 17 会因写不了 postmaster.pid / xlogtemp
+    # 反复启动失败。用 CANVAS_POSTGRES_SECCOMP_PROFILE 指定兼容 profile；
+    # 未设置时保持 Docker 默认策略，新内核机器不受影响。
+    security_opt:
+      - seccomp=${CANVAS_POSTGRES_SECCOMP_PROFILE:-default}
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s

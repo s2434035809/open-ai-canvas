@@ -87,24 +87,15 @@ func (m *Manager) currentVersion() (string, error) {
 }
 
 func (m *Manager) prepareTargetCompose(targetVersion string) (string, error) {
-	url := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s", m.config.Repository, targetVersion, m.config.ComposeFile)
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return "", err
-	}
-	response, err := m.httpClient.Do(request)
-	if err != nil {
-		return "", fmt.Errorf("下载目标 Compose：%w", err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("下载目标 Compose 返回 HTTP %d", response.StatusCode)
-	}
-	data, err := io.ReadAll(io.LimitReader(response.Body, 2<<20))
-	if err != nil {
-		return "", err
+	// 优先取 Release 附件：发布流程会把目标版本的 compose 一并挂上去。
+	// 这样 dev 预览版（分支提交，不是 tag）也能拿到 compose，
+	// 而 raw.githubusercontent 只对 tag/分支名有效，无法指向具体提交。
+	data, err := m.downloadReleaseCompose(targetVersion)
+	if err != nil || len(data) == 0 {
+		data, err = m.downloadComposeFromRef(targetVersion)
+		if err != nil {
+			return "", err
+		}
 	}
 	if len(data) == 0 {
 		return "", errors.New("目标 Compose 文件为空")
@@ -114,6 +105,35 @@ func (m *Manager) prepareTargetCompose(targetVersion string) (string, error) {
 		return "", fmt.Errorf("保存目标 Compose：%w", err)
 	}
 	return path, nil
+}
+
+func (m *Manager) downloadReleaseCompose(targetVersion string) ([]byte, error) {
+	url := fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", m.config.Repository, targetVersion, m.config.ComposeFile)
+	data, err := m.downloadReleaseAsset(url, 2<<20)
+	if err != nil {
+		return nil, fmt.Errorf("下载 Release 内的 Compose：%w", err)
+	}
+	return data, nil
+}
+
+func (m *Manager) downloadComposeFromRef(targetVersion string) ([]byte, error) {
+	url := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s", m.config.Repository, targetVersion, m.config.ComposeFile)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("User-Agent", "open-ai-canvas-host-updater")
+	response, err := m.httpClient.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("下载目标 Compose：%w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("下载目标 Compose 返回 HTTP %d", response.StatusCode)
+	}
+	return io.ReadAll(io.LimitReader(response.Body, 2<<20))
 }
 
 func (m *Manager) preflight(composePath, targetVersion string) error {

@@ -44,7 +44,8 @@ func RegisterCanvasAPI(api *gin.RouterGroup, svc *service.Service) {
 	RegisterChunkedUploadRoutes(api, svc)
 	RegisterDiagnosticsRoutes(api, svc)
 	RegisterPluginRoutes(api, svc)
-	RegisterPortfolioRoutes(api, svc)
+	// design-studio 插件（见 handler/design.go）。
+	RegisterDesignRoutes(api, svc)
 	RegisterLibraryRoutes(api, svc)
 	projectAPI := api.Group("")
 	projectAPI.Use(RequireFeature(svc, service.FeatureShortDrama))

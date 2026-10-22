@@ -162,13 +162,19 @@ func (m *dxosManager) dxosLogin(ctx context.Context) (string, error) {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 2000))
 		return "", fmt.Errorf("DXOS 桌面会话失败（HTTP %d）：%s", response.StatusCode, strings.TrimSpace(string(body)))
 	}
+	// DXOS 0.6.5 起按传输层分开了会话 cookie：HTTPS 用 ccs_session，
+	// 明文 HTTP 用 ccs_session_http。这里两个都收，避免被宿主升级打断更新。
+	var pairs []string
 	for _, cookie := range response.Cookies() {
-		if cookie.Name == "ccs_session" {
-			m.dxosCookie = cookie.Name + "=" + cookie.Value
-			return m.dxosCookie, nil
+		if cookie.Name == "ccs_session" || cookie.Name == "ccs_session_http" {
+			pairs = append(pairs, cookie.Name+"="+cookie.Value)
 		}
 	}
-	return "", errors.New("DXOS 未返回会话 cookie")
+	if len(pairs) == 0 {
+		return "", errors.New("DXOS 未返回会话 cookie")
+	}
+	m.dxosCookie = strings.Join(pairs, "; ")
+	return m.dxosCookie, nil
 }
 
 // readDXOSDesktopSecret 从正在运行的 DXOS 进程环境里读取桌面凭据。

@@ -703,18 +703,6 @@ func (s *Service) advanceCloudAgentTool(run *model.CloudAgentExecution, state *c
 			}
 		}
 	}
-	// 作品集看图与画布看图共用同一套每轮视觉预算，也在写事务外完成资源校验。
-	if allowed && call.Function.Name == "portfolio_inspect_image" && state.Request.VisionEnabled {
-		inspectionResult, inspectionErr = s.prepareCloudAgentPortfolioInspection(run.UserID, state, call)
-		if errors.Is(inspectionErr, errCloudAgentImageInspectionBudget) {
-			inspectionErr = &cloudAgentReadLoopError{
-				ToolName:   "portfolio_inspect_image",
-				Count:      state.cloudAgentImageInspectionCalls() + 1,
-				Budget:     true,
-				ReasonCode: "vision_read_budget_exceeded",
-			}
-		}
-	}
 	// Service-backed reads may open resources or use domain repositories.
 	// Read before the checkpoint transaction to avoid nested DB reads on SQLite
 	// and holding the write transaction open during storage IO.
@@ -773,25 +761,6 @@ func (s *Service) advanceCloudAgentTool(run *model.CloudAgentExecution, state *c
 					}
 				}
 			}
-		case call.Function.Name == "portfolio_inspect_image":
-			result, toolErr = inspectionResult, inspectionErr
-			if toolErr == nil && inspectionResult != nil {
-				if inspection, ok := inspectionResult.(cloudAgentImageInspection); ok {
-					state.markCanvasImageInspection(stringValue(inspection.Receipt["elementId"]), strings.TrimSpace(inspection.ImageURL) != "")
-					if inspection.CacheKey != "" {
-						if state.ImageInspectionReads == nil {
-							state.ImageInspectionReads = map[string]int{}
-						}
-						state.ImageInspectionReads[inspection.CacheKey]++
-					}
-				}
-			}
-		case call.Function.Name == "portfolio_propose_annotations":
-			// 只登记建议：作品集文档在这一步没有被修改，写入等用户在界面上确认。
-			result, toolErr = proposeCloudAgentPortfolioAnnotations(repo, run.UserID, state, run.ID, call)
-		case call.Function.Name == "portfolio_propose_layouts":
-			// 只登记版式方案：文档没被修改，等用户在工作台选定方案后才应用。
-			result, toolErr = proposeCloudAgentPortfolioLayouts(repo, run.UserID, state, run.ID, call)
 		case call.Function.Name == "skill_read_file", call.Function.Name == "model_list", call.Function.Name == "image_annotation_render", call.Function.Name == "canvas_read_text":
 			result, toolErr = skillResult, skillErr
 		default:

@@ -1,0 +1,45 @@
+diff --git a/backend/internal/skills/skill_curation_test.go b/backend/internal/skills/skill_curation_test.go
+index c02381e9..fbb379b6 100644
+--- a/backend/internal/skills/skill_curation_test.go
++++ b/backend/internal/skills/skill_curation_test.go
+@@ -36,7 +36,7 @@ func newCurationTest(t *testing.T) (*Service, *gorm.DB, *model.User) {
+ func TestSkillCurationDisabledSnapshot(t *testing.T) {
+ 	svc, db, actor := newCurationTest(t)
+ 	// Snapshot of the original empty /skills data and fixed category order.
+-	const original = `{"skills":[],"totalCount":0,"hasMore":false,"nextOffset":0,"page":1,"pageSize":20,"categories":[{"value":"drama","label":"短剧影视"},{"value":"ecommerce","label":"电商营销"},{"value":"creative","label":"创意设计"},{"value":"social","label":"社媒内容"},{"value":"others","label":"其他"}]}`
++	const original = `{"skills":[],"totalCount":0,"hasMore":false,"nextOffset":0,"page":1,"pageSize":20,"categories":[{"value":"drama","label":"短剧影视"},{"value":"ecommerce","label":"电商营销"},{"value":"creative","label":"创意设计"},{"value":"social","label":"社媒内容"},{"value":"audio","label":"音频配音"},{"value":"others","label":"其他"}]}`
+ 	if err := db.Create(&model.SkillCurationCategory{ID: "hidden", RootTag: "drama", Name: "Hidden", NormalizedName: "hidden", Enabled: true}).Error; err != nil {
+ 		t.Fatal(err)
+ 	}
+diff --git a/backend/internal/skills/skills.go b/backend/internal/skills/skills.go
+index fd821220..567a5a26 100644
+--- a/backend/internal/skills/skills.go
++++ b/backend/internal/skills/skills.go
+@@ -29,6 +29,7 @@ var skillCategoryLabels = map[string]string{
+ 	"ecommerce": "电商营销",
+ 	"creative":  "创意设计",
+ 	"social":    "社媒内容",
++	"audio":     "音频配音",
+ 	"others":    "其他",
+ }
+ 
+@@ -556,6 +557,7 @@ func skillCategories() []SkillCategory {
+ 		{Value: "ecommerce", Label: skillCategoryLabels["ecommerce"]},
+ 		{Value: "creative", Label: skillCategoryLabels["creative"]},
+ 		{Value: "social", Label: skillCategoryLabels["social"]},
++		{Value: "audio", Label: skillCategoryLabels["audio"]},
+ 		{Value: "others", Label: skillCategoryLabels["others"]},
+ 	}
+ }
+diff --git a/web/src/pages/skills/skill-catalog.ts b/web/src/pages/skills/skill-catalog.ts
+index d7557483..eb1018a4 100644
+--- a/web/src/pages/skills/skill-catalog.ts
++++ b/web/src/pages/skills/skill-catalog.ts
+@@ -5,6 +5,7 @@ export const fallbackSkillCategories: SkillCategory[] = [
+     { value: "ecommerce", label: "电商营销" },
+     { value: "creative", label: "创意设计" },
+     { value: "social", label: "社媒内容" },
++    { value: "audio", label: "音频配音" },
+     { value: "others", label: "其他" },
+ ];
+ 

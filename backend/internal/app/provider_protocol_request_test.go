@@ -55,3 +55,40 @@ func TestProtocolRequestFromInputKeepsURLForUnsupportedOpenAIImageFormat(t *test
 		t.Fatal("response_format should be omitted when the capability is unsupported")
 	}
 }
+
+func TestOpenAIVideoPixelSizeUsesGatewayEnumeratedSizes(t *testing.T) {
+	tests := map[string]string{
+		"16:9":      "1280x720",
+		"9:16":      "720x1280",
+		"4:3":       "1280x720",
+		"3:4":       "720x1280",
+		"1:1":       "1280x720",
+		"21:9":      "1280x720",
+		"auto":      "1280x720",
+		"":          "1280x720",
+		"1280x720":  "1280x720",
+		"720x1280":  "720x1280",
+		"1920x1080": "1280x720",
+		"1080x1920": "720x1280",
+	}
+	for input, want := range tests {
+		t.Run(input, func(t *testing.T) {
+			if got := openAIVideoPixelSize(input); got != want {
+				t.Fatalf("openAIVideoPixelSize(%q) = %q, want %q", input, got, want)
+			}
+		})
+	}
+}
+
+func TestProtocolRequestFromInputConvertsNewAPIVideoRatioToPixels(t *testing.T) {
+	request := protocolRequestFromInput(canvasGenerationInput{
+		Mode: "video",
+		Config: providerConfig{
+			InterfaceType: string(model.ChannelInterfaceNewAPIVideo),
+			Size:          "16:9",
+		},
+	})
+	if request.AspectRatio != "1280x720" {
+		t.Fatalf("aspectRatio = %q, want 1280x720", request.AspectRatio)
+	}
+}

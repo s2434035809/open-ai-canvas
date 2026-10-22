@@ -9,7 +9,7 @@ import (
 )
 
 // Pi 运行时的模型步骤（runCloudAgentModelStep）重建出来的 canonical 里，图片仍然是
-// `resource:<id>` 占位符——它由 portfolio_inspect_image / canvas_inspect_image 产生，
+// `resource:<id>` 占位符——它由 canvas_inspect_image 产生，
 // 经运行时消息原样回传。占位符只有先登记进参考图白名单，下游 hydrate 才会把它换成真实
 // 图片数据；漏登记时整轮会以「模型协议引用了未获准的图片」失败（用户侧表现为"Agent 跑不通"，
 // 而所有既有用例依旧全绿）。

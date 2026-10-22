@@ -17,6 +17,10 @@ tags=(--tag "$IMAGE:sha-$GITHUB_SHA" --tag "$IMAGE:sha-${GITHUB_SHA:0:7}")
 if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
   [[ "${VERSION_TAG:?}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?([.-][0-9A-Za-z.-]+)?$ ]] || { echo "Invalid version image tag" >&2; exit 1; }
   tags+=(--tag "$IMAGE:$VERSION_TAG")
+elif [[ "$GITHUB_REF" == refs/heads/dev ]]; then
+  # dev 预览版本：<version>-dev.<short sha>，供服务器在线更新使用。
+  [[ "${VERSION_TAG:?}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?-dev\.[0-9a-f]{7}$ ]] || { echo "Invalid dev preview image tag" >&2; exit 1; }
+  tags+=(--tag "$IMAGE:$VERSION_TAG")
 elif [[ "$GITHUB_REF" == refs/heads/main ]]; then
   current_sha=$(gh api "repos/${GITHUB_REPOSITORY:?}/git/ref/heads/main" --jq '.object.sha')
   [[ "$current_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid main branch SHA" >&2; exit 1; }

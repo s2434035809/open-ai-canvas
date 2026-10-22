@@ -1,0 +1,412 @@
+diff --git a/backend/internal/app/cloud_agent_approval_settings_test.go b/backend/internal/app/cloud_agent_approval_settings_test.go
+index 63f0d5b7..62ca00d8 100644
+--- a/backend/internal/app/cloud_agent_approval_settings_test.go
++++ b/backend/internal/app/cloud_agent_approval_settings_test.go
+@@ -6,6 +6,8 @@ import (
+ 	"strings"
+ 	"testing"
+ 
++	"gorm.io/gorm"
++
+ 	"yingce/backend/internal/model"
+ )
+ 
+@@ -362,3 +364,217 @@ func TestCloudAgentConversationKeepsRecentRounds(t *testing.T) {
+ 		t.Fatal("trimmed away the conversation")
+ 	}
+ }
++
++// agentImageApprovalFixture 准备一次图片生成审批：图片模型、参考素材与审批参数。
++func agentImageApprovalFixture(t *testing.T) (*Service, *gorm.DB, cloudAgentMediaArgs) {
++	t.Helper()
++	s, db, a := agentMediaFixture(t)
++	capability := DefaultModelCapabilityConfigForModel(string(model.ChannelInterfaceGrokImage), "grok-image")
++	for _, row := range []any{
++		&model.ChannelModel{ID: "grok-image", ChannelID: "channel", ModelKey: "grok-image", DisplayName: "grok-image", Capability: "image", Protocol: model.ChannelInterfaceGrokImage, CapabilityConfigJSON: mustEncodeModelCapabilityConfig(t, capability), BillingMode: "fixed_request", PriceConfigured: true, Enabled: true},
++		&model.ChannelModelPriceTier{ID: "grok-image-tier", ChannelModelID: "grok-image", SelectorKey: "{}", SelectorJSON: "{}", BillingMode: "fixed_request", UnitPriceMicrocredits: 1, PriceConfigured: true, Enabled: true},
++	} {
++		if err := db.Create(row).Error; err != nil {
++			t.Fatal(err)
++		}
++	}
++	a.Mode, a.ChannelModelKey, a.Duration, a.VideoGenerateAudio = "image", "grok-image", 0, nil
++	a.Size, a.Quality, a.NodeID = "1:1", "2k", "image-shot-1"
++	a.ReferenceNodeIDs = []string{"cat"}
++	return s, db, a
++}
++
++// agentUnrelatedCanvasWrite 模拟审批卡片出现后前端的画布自动保存：画布文本变了，
++// 但本次生成的节点级依赖（目标节点、引用、来源、入边）都没变。
++func agentUnrelatedCanvasWrite(t *testing.T, db *gorm.DB) {
++	t.Helper()
++	var canvas model.CanvasProject
++	if err := db.First(&canvas, "id = ?", "agent-canvas").Error; err != nil {
++		t.Fatal(err)
++	}
++	doc, err := creationDocument(canvas.PayloadJSON)
++	if err != nil {
++		t.Fatal(err)
++	}
++	nodes, err := creationObjects(doc["nodes"])
++	if err != nil {
++		t.Fatal(err)
++	}
++	metadata, _ := nodes["hero"]["metadata"].(map[string]any)
++	if metadata == nil {
++		t.Fatal("fixture lost the unrelated reference node")
++	}
++	metadata["note"] = "自动保存写入的展示信息"
++	doc["chatSessions"] = []any{map[string]any{"id": "session-1", "title": "生成队列"}}
++	raw, err := json.Marshal(doc)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if err := db.Model(&model.CanvasProject{}).Where("id = ?", "agent-canvas").Update("payload_json", string(raw)).Error; err != nil {
++		t.Fatal(err)
++	}
++}
++
++// 回归：审批创建后画布被无关写入改动（前端自动保存），用户再改画幅/质量点“同意执行”。
++// 准入必须按节点级生成依赖判定内容未变，而不是回落到画布级文本哈希。
++// 修复前这条路径必然 409，审批停在 waiting_approval，界面显示“点了没反应”。
++func TestCloudAgentImageApprovalAcceptsEditedSettingsAfterUnrelatedCanvasWrite(t *testing.T) {
++	s, db, a := agentImageApprovalFixture(t)
++	run, _ := agentMediaRun(t, s, a, "request_approval")
++	if err := s.advanceCloudAgentByID("user", run.ID); err != nil {
++		t.Fatal(err)
++	}
++	run, _ = s.repo.CloudAgent("user", run.ID)
++	state, err := cloudAgentDecode(run)
++	if err != nil || state.Approval == nil || state.Approval.Prepared == nil {
++		t.Fatalf("missing prepared image approval: %v", err)
++	}
++	agentUnrelatedCanvasWrite(t, db)
++
++	// grok-image 的能力声明里尺寸走 aspect_ratio、分辨率走 imageResolution，
++	// 上游 v1.6.8 起 Quality 不再承载分辨率（image.Quality.Supported = false）。
++	settings := CloudAgentMediaSettings{ChannelID: "channel", ChannelModelKey: "grok-image", Size: "16:9", ImageResolution: "2k"}
++	if err := s.DecideCloudAgentApproval("user", run.ID, state.Approval.ID, "approve", "", &settings); err != nil {
++		t.Fatalf("unrelated canvas write blocked an edited approval: %v", err)
++	}
++	if err := s.advanceCloudAgentByID("user", run.ID); err != nil {
++		t.Fatal(err)
++	}
++	run, _ = s.repo.CloudAgent("user", run.ID)
++	state, err = cloudAgentDecode(run)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if state.MediaTaskID == "" {
++		t.Fatalf("edited approval submitted no task: %+v", state.Events)
++	}
++	task, err := s.repo.TaskForUser("user", state.MediaTaskID)
++	if err != nil {
++		t.Fatal(err)
++	}
++	var input canvasGenerationInput
++	if err := json.Unmarshal([]byte(task.InputJSON), &input); err != nil {
++		t.Fatal(err)
++	}
++	if input.Config.Size != settings.Size || input.Config.ImageResolution != settings.ImageResolution {
++		t.Fatalf("approved settings were lost: %+v", input.Config)
++	}
++}
++
++// 反向边界：放行无关写入不能放宽依赖校验。草稿节点的生成依赖真的变了（提示词被改写），
++// 即使同时改了画幅也必须拒绝，审批保持 waiting_approval 且不产生任务。
++func TestCloudAgentImageApprovalRejectsEditedSettingsAfterDependencyChange(t *testing.T) {
++	s, db, a := agentImageApprovalFixture(t)
++	run, _ := agentMediaRun(t, s, a, "request_approval")
++	if err := s.advanceCloudAgentByID("user", run.ID); err != nil {
++		t.Fatal(err)
++	}
++	run, _ = s.repo.CloudAgent("user", run.ID)
++	state, err := cloudAgentDecode(run)
++	if err != nil || state.Approval == nil || state.Approval.Prepared == nil {
++		t.Fatalf("missing prepared image approval: %v", err)
++	}
++	canvas, err := s.repo.CanvasProjectForUser("user", "agent-canvas")
++	if err != nil {
++		t.Fatal(err)
++	}
++	doc, err := creationDocument(canvas.PayloadJSON)
++	if err != nil {
++		t.Fatal(err)
++	}
++	nodes, err := creationObjects(doc["nodes"])
++	if err != nil {
++		t.Fatal(err)
++	}
++	metadata, _ := nodes[a.NodeID]["metadata"].(map[string]any)
++	if metadata == nil {
++		t.Fatal("approval did not create the draft node")
++	}
++	metadata["composerContent"] = "用户改写后的草稿提示词"
++	raw, err := json.Marshal(doc)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if err := db.Model(canvas).Update("payload_json", string(raw)).Error; err != nil {
++		t.Fatal(err)
++	}
++	agentUnrelatedCanvasWrite(t, db)
++
++	settings := CloudAgentMediaSettings{ChannelID: "channel", ChannelModelKey: "grok-image", Size: "16:9", ImageResolution: "2k"}
++	if err := s.DecideCloudAgentApproval("user", run.ID, state.Approval.ID, "approve", "", &settings); err == nil {
++		t.Fatal("changed generation dependency accepted an edited approval")
++	}
++	pending, err := s.CloudAgentRun("user", run.ID)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if pending.Status != "waiting_approval" {
++		t.Fatalf("rejected approval changed run status: %s", pending.Status)
++	}
++	var count int64
++	db.Model(&model.Task{}).Where("type = ?", "canvas_image").Count(&count)
++	if count != 0 {
++		t.Fatal("rejected approval submitted a task")
++	}
++}
++
++// agentImagePresetApprovalFixture 与 agentImageApprovalFixture 相同，但给 grok-image
++// 声明了像素↔比例预设表。这正是线上出问题的形态：审批卡按像素提交画幅，任务准入把它
++// 归一化成比例（或反过来），两边字符串必然不等。
++func agentImagePresetApprovalFixture(t *testing.T) (*Service, *gorm.DB, cloudAgentMediaArgs) {
++	t.Helper()
++	s, db, a := agentMediaFixture(t)
++	capability := DefaultModelCapabilityConfigForModel(string(model.ChannelInterfaceGrokImage), "grok-image")
++	capability.Image.Size.Presets = []ImageSizePreset{
++		{Tier: "2k", Ratio: "1:1", Size: "2048x2048", Width: 2048, Height: 2048},
++		{Tier: "2k", Ratio: "16:9", Size: "2752x1536", Width: 2752, Height: 1536},
++	}
++	if err := validateImageCapabilityConfig(capability.Image); err != nil {
++		t.Fatal(err)
++	}
++	for _, row := range []any{
++		&model.ChannelModel{ID: "grok-image", ChannelID: "channel", ModelKey: "grok-image", DisplayName: "grok-image", Capability: "image", Protocol: model.ChannelInterfaceGrokImage, CapabilityConfigJSON: mustEncodeModelCapabilityConfig(t, capability), BillingMode: "fixed_request", PriceConfigured: true, Enabled: true},
++		&model.ChannelModelPriceTier{ID: "grok-image-tier", ChannelModelID: "grok-image", SelectorKey: "{}", SelectorJSON: "{}", BillingMode: "fixed_request", UnitPriceMicrocredits: 1, PriceConfigured: true, Enabled: true},
++	} {
++		if err := db.Create(row).Error; err != nil {
++			t.Fatal(err)
++		}
++	}
++	a.Mode, a.ChannelModelKey, a.Duration, a.VideoGenerateAudio = "image", "grok-image", 0, nil
++	// 审批卡按像素提交画幅：准入会把它归一化成模型声明的 16:9。
++	a.Size, a.Quality, a.ImageResolution, a.NodeID = "2752x1536", "", "2k", "image-shot-1"
++	a.ReferenceNodeIDs = []string{"cat"}
++	return s, db, a
++}
++
++// 回归：审批卡里改过画幅后点「同意执行」。审批期按模型目录归一化放行，执行期曾用旧的
++// 字符串严格比较把同一次审批判成“与审批参数不同”并驳回——用户视角就是点了「同意执行」
++// 卡片消失却立刻失败。执行期必须与审批期共用同一条归一化路径。
++func TestCloudAgentImageApprovalEditedSettingsSurviveExecutionPath(t *testing.T) {
++	s, _, a := agentImagePresetApprovalFixture(t)
++	run, _ := agentMediaRun(t, s, a, "request_approval")
++	if err := s.advanceCloudAgentByID("user", run.ID); err != nil {
++		t.Fatal(err)
++	}
++	run, _ = s.repo.CloudAgent("user", run.ID)
++	state, err := cloudAgentDecode(run)
++	if err != nil || state.Approval == nil {
++		t.Fatalf("missing approval: %v", err)
++	}
++	// 用户把画幅改成模型声明比例对应的另一组像素值。
++	settings := CloudAgentMediaSettings{ChannelID: "channel", ChannelModelKey: "grok-image", Size: "2752x1536", ImageResolution: "2k"}
++	if err := s.DecideCloudAgentApproval("user", run.ID, state.Approval.ID, "approve", "", &settings); err != nil {
++		t.Fatalf("edited approval was rejected: %v", err)
++	}
++	run, _ = s.repo.CloudAgent("user", run.ID)
++	state, err = cloudAgentDecode(run)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if state.MediaTaskID == "" {
++		t.Fatalf("edited approval submitted no task: status=%s failure=%q", run.Status, run.FailureMessage)
++	}
++	if run.Status == "failed" {
++		t.Fatalf("edited approval failed the run: %q", run.FailureMessage)
++	}
++}
+diff --git a/backend/internal/app/cloud_agent_media_approval.go b/backend/internal/app/cloud_agent_media_approval.go
+index a1ba3e04..30199141 100644
+--- a/backend/internal/app/cloud_agent_media_approval.go
++++ b/backend/internal/app/cloud_agent_media_approval.go
+@@ -2,6 +2,7 @@ package app
+ 
+ import (
+ 	"encoding/json"
++	"log"
+ 	"strings"
+ 
+ 	"yingce/backend/internal/model"
+@@ -80,14 +81,12 @@ func (s *Service) updateCloudAgentMediaApproval(repo *repository.Repository, run
+ 	if err != nil {
+ 		return err
+ 	}
+-	var resolved map[string]any
+-	if err := json.Unmarshal([]byte(task.InputJSON), &resolved); err != nil {
+-		return err
+-	}
+-	requested, _ := req.Input["config"].(map[string]any)
+-	if err := validateCloudAgentResolvedMediaOptions(requested, resolved); err != nil {
+-		return err
+-	}
++	// 常规任务准入负责能力默认值解析：模型目录可能把用户在审批卡里选的画幅/质量归一化成
++	// 它真正支持的规格（自动执行路径同样依赖 applyCloudAgentResolvedMediaDefaults）。
++	// 这里沿用解析后的契约，并把它回写到请求和 plan，使审批预览、报价和真正提交的任务
++	// 共用同一套规格。旧实现在这里直接判「解析后的规格与审批参数不同」并拒绝，用户只要在
++	// 审批卡里改过参数，每次点「同意执行」都会被驳回，审批卡片也就一直关不掉。
++	logCloudAgentResolvedMediaNormalization(run.ID, req.Input["config"], task.InputJSON)
+ 	if err := applyCloudAgentResolvedMediaDefaults(&req, plan, task); err != nil {
+ 		return err
+ 	}
+@@ -143,6 +142,37 @@ func replaceCloudAgentPreparedLeases(repo *repository.Repository, userID, runID,
+ 	return repo.ReplaceCloudAgentResourceLeases(userID, runID, approvalID, ids, prepared.Quote.ExpiresAt)
+ }
+ 
++// cloudAgentResolvedMediaOptionKeys 是任务准入会按模型能力重新解析的生成规格键。
++// 审批期与执行期的归一化都必须按这组键记录差异。
++var cloudAgentResolvedMediaOptionKeys = []string{"size", "imageResolution", "videoSeconds", "vquality", "quality", "count", "videoGenerateAudio", "videoWatermark", "videoArkPrivateAssetUpload"}
++
++// logCloudAgentResolvedMediaNormalization 记录审批改参后被模型目录归一化的规格差异。
++// 归一化不再导致审批提交失败，差异必须留在日志里可追溯。上游 v1.6.8 起权威规格
++// 写在 capabilityOptions（config 保留同名字段），两处都读，避免漏记或被旧值误导。
++func logCloudAgentResolvedMediaNormalization(runID string, requested any, taskInputJSON string) {
++	var resolved struct {
++		CapabilityOptions map[string]any `json:"capabilityOptions"`
++		Config            map[string]any `json:"config"`
++	}
++	if err := json.Unmarshal([]byte(taskInputJSON), &resolved); err != nil {
++		return
++	}
++	resolvedValue := func(key string) string {
++		if value := stringValue(resolved.CapabilityOptions[key]); value != "" {
++			return value
++		}
++		return stringValue(resolved.Config[key])
++	}
++	requestedConfig, _ := requested.(map[string]any)
++	for _, key := range cloudAgentResolvedMediaOptionKeys {
++		value := stringValue(requestedConfig[key])
++		if value == "" || strings.EqualFold(value, resolvedValue(key)) {
++			continue
++		}
++		log.Printf("cloud agent approval normalized media option: run=%s %s=%q resolved=%q", runID, key, value, resolvedValue(key))
++	}
++}
++
+ func validateCloudAgentResolvedMediaOptions(requested, resolvedInput map[string]any) error {
+ 	resolvedOptions, _ := resolvedInput["capabilityOptions"].(map[string]any)
+ 	resolvedConfig, _ := resolvedInput["config"].(map[string]any)
+diff --git a/backend/internal/app/cloud_agent_runtime_media.go b/backend/internal/app/cloud_agent_runtime_media.go
+index de479837..f753ff6e 100644
+--- a/backend/internal/app/cloud_agent_runtime_media.go
++++ b/backend/internal/app/cloud_agent_runtime_media.go
+@@ -98,10 +98,13 @@ func (s *Service) enqueueCloudAgentTask(run *model.CloudAgentExecution, state *c
+ 		return err
+ 	}
+ 	if media != nil {
+-		requested, _ := req.Input["config"].(map[string]any)
+-		if err := validateCloudAgentResolvedMediaOptions(requested, input); err != nil {
+-			return s.cloudAgentMediaError(run, state, "admission", false, false, err)
+-		}
++		// 常规任务准入已把审批卡里改过的画幅/质量按模型目录归一化，审批期同样如此
++		// （见 updateCloudAgentMediaApproval）。这里再拿审批参数做字符串严格相等，会把
++		// 每一次“改参后同意执行”都判成“与审批参数不同”并驳回——用户视角就是点了
++		// 「同意执行」卡片消失却立刻失败。提交规格与已批准规格、报价的一致性由同一个
++		// 写事务里的 validateCloudAgentPreparedAdmission（ResolvedHash/QuoteHash/
++		// 节点级依赖哈希）保证，归一化差异只记录日志。
++		logCloudAgentResolvedMediaNormalization(run.ID, req.Input["config"], task.InputJSON)
+ 	}
+ 	if err = s.protectTaskSecrets(input); err != nil {
+ 		if media != nil {
+diff --git a/web/src/services/api/agent.ts b/web/src/services/api/agent.ts
+index 55daa25b..fbe30257 100644
+--- a/web/src/services/api/agent.ts
++++ b/web/src/services/api/agent.ts
+@@ -16,6 +16,42 @@ export type AgentMediaSettings = {
+     videoWatermark?: boolean;
+     videoArkPrivateAssetUpload?: boolean;
+ };
++/**
++ * 审批决策接口只接受这组生成参数：它们由用户在本机审批卡里编辑，服务端按同一套
++ * 模型能力契约重新解析（见后端 CloudAgentMediaSettings）。generate_media 的其余
++ * 参数（prompt、referenceNodeIds、nodeId、snapshotHash、title 等）是服务端持有的
++ * 生成意图，客户端回传会被请求体的 DisallowUnknownFields 判为 400。
++ */
++export const AGENT_MEDIA_SETTING_KEYS = [
++    "logicalModelId",
++    "channelId",
++    "channelModelKey",
++    "size",
++    "imageResolution",
++    "imageParameters",
++    "quality",
++    "durationSeconds",
++    "videoGenerateAudio",
++    "videoWatermark",
++    "videoArkPrivateAssetUpload",
++] as const;
++
++/** 只保留审批接口白名单字段；undefined 不落键，保持请求体最小。 */
++export function normalizeAgentMediaSettings(settings: AgentMediaSettings | undefined): AgentMediaSettings | undefined {
++    if (!settings) return undefined;
++    const normalized: Record<string, unknown> = {};
++    for (const key of AGENT_MEDIA_SETTING_KEYS) {
++        const value = settings[key];
++        if (value !== undefined) normalized[key] = value;
++    }
++    return normalized as AgentMediaSettings;
++}
++
++/** 提交体与所选设置是否一致：重试确认用它，避免把别的字段差异当成同一次成功。 */
++export function agentMediaSettingsEqual(left: AgentMediaSettings | undefined, right: AgentMediaSettings | undefined): boolean {
++    return JSON.stringify(normalizeAgentMediaSettings(left) ?? null) === JSON.stringify(normalizeAgentMediaSettings(right) ?? null);
++}
++
+ export type AgentProfileScope = "user" | "project" | "canvas";
+ 
+ export type AgentProfileLayer = {
+@@ -186,7 +222,11 @@ export function undoAgentCanvasRun(runId: string, input: { stepId?: string; expe
+ }
+ 
+ export async function decideAgentApproval(runId: string, approvalId: string, decision: "approve" | "reject", reason?: string, signal?: AbortSignal, mediaSettings?: AgentMediaSettings) {
+-    return http.post<{ accepted: boolean }>(`/agent/runs/${encodeURIComponent(runId)}/approvals/${encodeURIComponent(approvalId)}/decision`, { decision, reason: reason?.trim() || undefined, ...(mediaSettings ? { mediaSettings } : {}) }, { signal });
++    // 后端对该请求体启用了 DisallowUnknownFields：审批卡展示的是完整 generate_media
++    // 参数，多带一个 prompt/referenceNodeIds 就整条 400，审批卡不关闭，用户看到的是
++    // 「点了同意执行没反应」。这里统一按白名单收敛，调用方无需各自记得过滤。
++    const settings = normalizeAgentMediaSettings(mediaSettings);
++    return http.post<{ accepted: boolean }>(`/agent/runs/${encodeURIComponent(runId)}/approvals/${encodeURIComponent(approvalId)}/decision`, { decision, reason: reason?.trim() || undefined, ...(settings ? { mediaSettings: settings } : {}) }, { signal });
+ }
+ 
+ export function subscribeAgentEvents(runId: string, onEvent: (event: AgentEvent) => void, options: { after?: number; onError?: (error: unknown) => void; onConnectionChange?: (status: "connecting" | "connected" | "reconnecting" | "disconnected") => void; timeoutMs?: number } = {}) {
+diff --git a/web/test/agent-api-reliability.test.ts b/web/test/agent-api-reliability.test.ts
+index 1497dc23..7b4da0a9 100644
+--- a/web/test/agent-api-reliability.test.ts
++++ b/web/test/agent-api-reliability.test.ts
+@@ -74,6 +74,23 @@ describe("Agent SSE recovery", () => {
+         await api.decideAgentApproval("run/id", "approval/id", "approve", "", signal, mediaSettings);
+         expect(requests).toEqual([["/agent/runs/run%2Fid/approvals/approval%2Fid/decision", { decision: "approve", reason: undefined, mediaSettings }, { signal }]]);
+     });
++    it("strips server-owned generation intent from the approval settings body", async () => {
++        // 回归：审批卡展示的是完整 generate_media 参数，未改动设置时若整份展开回传，
++        // 后端 DisallowUnknownFields 会把 decision 判成 400，审批卡不关闭，
++        // 用户看到的就是「点了同意执行没反应」。
++        const requests: unknown[][] = [];
++        transport.http.post = async (...args: unknown[]) => { requests.push(args); return { accepted: true }; };
++        await api.decideAgentApproval("run", "approval", "approve", "", undefined, {
++            channelId: "CHANNEL_000023", channelModelKey: "gpt-image-2.5-1k",
++            size: "1024x1824", quality: "medium",
++            prompt: "漫画海报", referenceNodeIds: ["image-dog-1"], nodeId: "image-dog-poster-1", snapshotHash: "abc",
++        } as never);
++        const body = requests[0][1] as { mediaSettings: Record<string, unknown> };
++        expect(Object.keys(body.mediaSettings).sort()).toEqual(["channelId", "channelModelKey", "quality", "size"]);
++        for (const forbidden of ["prompt", "referenceNodeIds", "nodeId", "snapshotHash"]) {
++            expect(forbidden in body.mediaSettings).toBe(false);
++        }
++    });
+     it.each([401, 403, 404, 422])("stops immediately on definitive %s", async (status) => {
+         let requests = 0;
+         globalThis.fetch = (async () => { requests++; return new Response("", { status }); }) as typeof fetch;

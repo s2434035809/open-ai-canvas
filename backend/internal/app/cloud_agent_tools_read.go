@@ -52,7 +52,7 @@ func cloudAgentReadToolCacheable(name string) bool {
 // and search results are allowed to change between calls.
 func cloudAgentReadToolReadOnly(name string) bool {
 	switch name {
-	case "agent_profile_read", "canvas_get_state", "canvas_read_text", "canvas_read_storyboard", "previs_scene_read", "canvas_read_batch_table", "canvas_list_node_types", "skill_read_file", "skill_search", "model_list", "recall_lessons", "task_get", "portfolio_read_document":
+	case "agent_profile_read", "canvas_get_state", "canvas_read_text", "canvas_read_storyboard", "previs_scene_read", "canvas_read_batch_table", "canvas_list_node_types", "skill_read_file", "skill_search", "model_list", "recall_lessons", "task_get":
 		return true
 	default:
 		return false
@@ -605,8 +605,6 @@ func cloudAgentReadTool(repo *repository.Repository, userID string, state *cloud
 		result["status"] = task.Status
 		result["text"] = truncateRunes(taskResultText(task.ResultJSON), 4000)
 		return result, nil
-	case "portfolio_read_document":
-		return cloudAgentPortfolioReadTool(repo, userID, state, call)
 	}
 	return nil, BadAuthRequest("未知工具")
 }

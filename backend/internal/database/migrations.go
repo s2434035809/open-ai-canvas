@@ -11,7 +11,7 @@ import (
 	"gorm.io/gorm"
 )
 
-const CurrentSchemaVersion int64 = 57
+const CurrentSchemaVersion int64 = 59
 
 const baselineSchemaChecksum = "sha256:open-ai-canvas-schema-v1-20260830"
 const schemaMigrationAppliedAtIndexChecksum = "sha256:schema-migrations-applied-at-index-v2-20260830"
@@ -32,6 +32,10 @@ const resourceThumbnailChecksum = "sha256:resource-thumbnail-v41-20260927"
 const workbenchToolsMigrationName = "workbench_tools_and_presets"
 const workbenchToolsMigrationChecksum = "sha256:workbench-tools-presets-v54-20261014"
 const legacyWorkbenchToolsMigrationChecksum = "sha256:workbench-tools-presets-v51-20261014"
+const designDocumentsChecksum = "sha256:design-documents-v59-20261021"
+// legacyDesignDocumentsChecksum 是本仓库早期把 design_documents 记在 v58 的账本身份。
+// 上游 v58 被 agent_memory_proposals 占用后，该记录必须精确归一化到 v59。
+const legacyDesignDocumentsChecksum = "sha256:design-documents-v58-20261021"
 
 const postgresSchemaMigrationLockID int64 = 73123910420260830
 
@@ -149,8 +153,10 @@ var schemaMigrations = []migration{
 	{version: 43, name: "topup_sale_strategies", checksum: "sha256:topup-sale-strategies-v43-20260929", apply: func(tx *gorm.DB) error {
 		return tx.AutoMigrate(&model.TopupProduct{}, &model.PaymentOrder{})
 	}},
+	// v44 曾创建 portfolio_documents。作品集插件已移除，这里保留历史版本身份
+	// 以满足迁移账本校验；新装环境不再建表，已装环境保留旧表数据不做破坏性删除。
 	{version: 44, name: "portfolio_documents", checksum: "sha256:portfolio-documents-v44-20260929", apply: func(tx *gorm.DB) error {
-		return tx.AutoMigrate(&model.PortfolioDocument{})
+		return nil
 	}},
 	{version: 45, name: "upload_reservations", checksum: "sha256:upload-reservations-v45-20261005", apply: func(tx *gorm.DB) error {
 		return tx.AutoMigrate(&model.UploadReservation{})
@@ -200,6 +206,9 @@ var schemaMigrations = []migration{
 	}},
 	{version: 56, name: "sql_perf_indexes", checksum: "sha256:sql-perf-indexes-v56-20261016", apply: migrateSchemaV56},
 	{version: 57, name: "canvas_multi_session_sync", checksum: "sha256:canvas-multi-session-sync-v57", apply: migrateCanvasCollaboration},
+	{version: 59, name: "design_documents", checksum: designDocumentsChecksum, apply: func(tx *gorm.DB) error {
+		return tx.AutoMigrate(&model.DesignDocument{})
+	}},
 }
 
 func migratePrefixedIDSequenceReconcile(tx *gorm.DB) error {
@@ -570,6 +579,71 @@ func normalizeLegacyWorkbenchMigration(tx *gorm.DB) error {
 
 const workbenchToolsMigrationVersion int64 = 54
 
+const designDocumentsMigrationVersion int64 = 59
+
+// normalizeLegacyDesignDocumentsMigration 把本地早期占用的 58/design_documents
+// 账本记录顺延到 59。上游 1.6.9 起 58 是 agent_memory_proposals，直接改版本号会让
+// 已升级过的库在 checksum 校验阶段拒绝启动，所以必须精确改写而不是只换常量。
+func normalizeLegacyDesignDocumentsMigration(tx *gorm.DB) error {
+	var legacy schemaMigration
+	err := tx.First(&legacy, "version = ?", 58).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("读取数据库迁移 58：%w", err)
+	}
+	// 已经是上游 58（agent_memory_proposals）或其他迁移，说明无需归一化。
+	if legacy.Name != "design_documents" {
+		return nil
+	}
+	if legacy.Checksum != legacyDesignDocumentsChecksum {
+		return fmt.Errorf("数据库迁移 58 记录为 design_documents 但校验和为 %s；拒绝自动改写迁移账本", legacy.Checksum)
+	}
+
+	var occupied schemaMigration
+	err = tx.First(&occupied, "version = ?", designDocumentsMigrationVersion).Error
+	if err == nil {
+		// 已经被顺延过、旧别名没清理干净的中间态：v59 是设计工作台的新家，
+		// v58 必须还给上游 agent_memory_proposals。只删除身份完全匹配的别名行。
+		if occupied.Name != "design_documents" || occupied.Checksum != designDocumentsChecksum {
+			return fmt.Errorf("数据库迁移 58 为旧设计工作台记录，但 %d 已被 %s 占用；拒绝自动改写迁移账本", designDocumentsMigrationVersion, occupied.Name)
+		}
+		if !tx.Migrator().HasTable(&model.DesignDocument{}) {
+			return fmt.Errorf("数据库迁移 58 为旧设计工作台记录，但设计文档表不存在；请从备份恢复后再升级")
+		}
+		removed := tx.Where("version = ? AND name = ? AND checksum = ?", legacy.Version, legacy.Name, legacy.Checksum).Delete(&schemaMigration{})
+		if removed.Error != nil {
+			return fmt.Errorf("清理旧设计工作台迁移别名：%w", removed.Error)
+		}
+		if removed.RowsAffected != 1 {
+			return fmt.Errorf("清理旧设计工作台迁移别名影响 %d 行，拒绝继续启动", removed.RowsAffected)
+		}
+		return nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return fmt.Errorf("读取数据库迁移 %d：%w", designDocumentsMigrationVersion, err)
+	}
+	if !tx.Migrator().HasTable(&model.DesignDocument{}) {
+		return fmt.Errorf("数据库迁移 58 记录为设计工作台迁移，但设计文档表不存在；请从备份恢复后再升级")
+	}
+
+	result := tx.Model(&schemaMigration{}).
+		Where("version = ? AND name = ? AND checksum = ?", legacy.Version, legacy.Name, legacy.Checksum).
+		Updates(map[string]any{
+			"version":  designDocumentsMigrationVersion,
+			"name":     "design_documents",
+			"checksum": designDocumentsChecksum,
+		})
+	if result.Error != nil {
+		return fmt.Errorf("归一化旧设计工作台迁移记录：%w", result.Error)
+	}
+	if result.RowsAffected != 1 {
+		return fmt.Errorf("归一化旧设计工作台迁移记录影响 %d 行，拒绝继续启动", result.RowsAffected)
+	}
+	return nil
+}
+
 func migrateSchemaV56(tx *gorm.DB) error {
 	if err := tx.AutoMigrate(&model.ApiCallLog{}, &model.Task{}, &model.CreditLedgerEntry{}); err != nil {
 		return fmt.Errorf("迁移 SQL 性能索引：%w", err)
@@ -596,6 +670,9 @@ func MigrateSchema(db *gorm.DB) error {
 			return fmt.Errorf("初始化数据库迁移记录：%w", err)
 		}
 		if err := normalizeLegacyWorkbenchMigration(tx); err != nil {
+			return err
+		}
+		if err := normalizeLegacyDesignDocumentsMigration(tx); err != nil {
 			return err
 		}
 		plan, err := migrationsForDatabase(tx)

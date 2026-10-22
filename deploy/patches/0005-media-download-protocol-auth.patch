@@ -1,0 +1,91 @@
+diff --git a/backend/internal/app/provider_http_client.go b/backend/internal/app/provider_http_client.go
+index d7d8a261..24840366 100644
+--- a/backend/internal/app/provider_http_client.go
++++ b/backend/internal/app/provider_http_client.go
+@@ -22,6 +22,7 @@ import (
+ 
+ 	"yingce/backend/internal/model"
+ 	"yingce/backend/internal/platform"
++	"yingce/backend/internal/protocol"
+ )
+ 
+ func postGeminiJSON(ctx context.Context, config providerConfig, path string, body interface{}, target interface{}) error {
+@@ -189,12 +190,30 @@ func getProviderExternalBinary(ctx context.Context, config providerConfig, rawUR
+ 		return nil, "", err
+ 	}
+ 	if sameProviderOrigin(config.BaseURL, rawURL) {
+-		applyProviderAuth(req, config)
++		if err := applyProviderRequestAuth(ctx, req, config); err != nil {
++			return nil, "", err
++		}
+ 		ApplyOutboundHeaders(req, config.Headers)
+ 	}
+ 	return doBinary(req)
+ }
+ 
++// applyProviderRequestAuth prefers the auth a declarative protocol declared in
++// its manifest. Falling back to the generic bearer header for plugin protocols
++// would send the wrong credential on host-initiated requests such as result
++// downloads, which upstream ticket endpoints reject.
++func applyProviderRequestAuth(ctx context.Context, req *http.Request, config providerConfig) error {
++	if adapter, ok := protocolAdapterForContext(ctx, config.InterfaceType); ok {
++		if provider, ok := adapter.(protocol.ManifestAuthProvider); ok {
++			if auth := provider.ProtocolAuth(); strings.TrimSpace(auth.Type) != "" {
++				return applyProtocolAuth(req, config, auth)
++			}
++		}
++	}
++	applyProviderAuth(req, config)
++	return nil
++}
++
+ func sameProviderOrigin(baseURL string, rawURL string) bool {
+ 	base, baseErr := url.Parse(strings.TrimSpace(baseURL))
+ 	target, targetErr := url.Parse(strings.TrimSpace(rawURL))
+diff --git a/backend/internal/app/task_media_storage.go b/backend/internal/app/task_media_storage.go
+index 3e14a6fb..158248a7 100644
+--- a/backend/internal/app/task_media_storage.go
++++ b/backend/internal/app/task_media_storage.go
+@@ -126,7 +126,9 @@ func (s *Service) downloadTaskMedia(ctx context.Context, config providerConfig,
+ 		return "", "", err
+ 	}
+ 	if sameProviderOrigin(config.BaseURL, url) {
+-		applyProviderAuth(req, config)
++		if err = applyProviderRequestAuth(ctx, req, config); err != nil {
++			return "", "", err
++		}
+ 		ApplyOutboundHeaders(req, config.Headers)
+ 	}
+ 	ApplyDefaultOutboundHeaders(req)
+diff --git a/backend/internal/protocol/adapter.go b/backend/internal/protocol/adapter.go
+index a8d5874a..fa83911f 100644
+--- a/backend/internal/protocol/adapter.go
++++ b/backend/internal/protocol/adapter.go
+@@ -43,6 +43,14 @@ type ResultCapability interface {
+ 	ResultAvailable() bool
+ }
+ 
++// ManifestAuthProvider exposes the auth a declarative protocol declared in its
++// manifest. The host applies the same auth to host-initiated requests such as
++// result media downloads, so those requests cannot drift away from
++// create/poll and silently fall back to a generic bearer header.
++type ManifestAuthProvider interface {
++	ProtocolAuth() ManifestAuth
++}
++
+ type AgentRequestContext struct {
+ 	BaseURL string
+ 	Model   string
+diff --git a/backend/internal/protocol/manifest_adapter.go b/backend/internal/protocol/manifest_adapter.go
+index a7dcea41..76cbf0cf 100644
+--- a/backend/internal/protocol/manifest_adapter.go
++++ b/backend/internal/protocol/manifest_adapter.go
+@@ -28,6 +28,8 @@ func (a manifestAdapter) AgentAvailable() bool {
+ 
+ func (a manifestAdapter) ResultAvailable() bool { return a.manifest.ResultOperation != nil }
+ 
++func (a manifestAdapter) ProtocolAuth() ManifestAuth { return a.manifest.Auth }
++
+ func (a manifestAdapter) BuildCreate(_ context.Context, c RequestContext) (RequestSpec, error) {
+ 	if len(a.manifest.Contributes.Providers) == 0 {
+ 		return RequestSpec{}, fmt.Errorf("plugin %s does not provide a provider", a.manifest.Metadata.ID)

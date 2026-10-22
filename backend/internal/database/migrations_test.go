@@ -888,3 +888,185 @@ func TestToolsUpgradeFromMain29PreservesMigrationChecksums(t *testing.T) {
 		t.Fatal("tools tables missing")
 	}
 }
+
+func TestMigrateSchemaNormalizesLegacyDesignDocumentsV58ToV59(t *testing.T) {
+	db, err := Open(Config{Driver: "sqlite", DSN: "file:migration-design-legacy-v58?mode=memory&cache=shared"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&schemaMigration{}, &model.DesignDocument{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range schemaMigrations {
+		if item.version >= 58 {
+			break
+		}
+		if err := db.Create(&schemaMigration{Version: item.version, Name: item.name, Checksum: item.checksum, AppliedAt: time.Now().UTC()}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Create(&schemaMigration{
+		Version:   58,
+		Name:      "design_documents",
+		Checksum:  legacyDesignDocumentsChecksum,
+		AppliedAt: time.Now().UTC(),
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := MigrateSchema(db); err != nil {
+		t.Fatalf("migrate legacy design v58: %v", err)
+	}
+	var design schemaMigration
+	if err := db.First(&design, "version = ?", designDocumentsMigrationVersion).Error; err != nil {
+		t.Fatalf("design migration was not moved to %d: %v", designDocumentsMigrationVersion, err)
+	}
+	if design.Name != "design_documents" || design.Checksum != designDocumentsChecksum {
+		t.Fatalf("unexpected normalized design migration: %#v", design)
+	}
+	var upstream schemaMigration
+	if err := db.First(&upstream, "version = ?", 58).Error; err != nil {
+		t.Fatalf("upstream v58 migration missing after normalization: %v", err)
+	}
+	if upstream.Name != "agent_memory_proposals" || upstream.Checksum != "sha256:agent-memory-proposals-v58" {
+		t.Fatalf("v58 must be upstream agent_memory_proposals: %#v", upstream)
+	}
+	status, err := ReadSchemaStatus(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Ready || status.Current != CurrentSchemaVersion {
+		t.Fatalf("unexpected schema status: %#v", status)
+	}
+}
+
+func TestMigrateSchemaKeepsUpstreamAgentMemoryProposalsV58(t *testing.T) {
+	db, err := Open(Config{Driver: "sqlite", DSN: "file:migration-design-upstream-v58?mode=memory&cache=shared"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := MigrateSchema(db); err != nil {
+		t.Fatal(err)
+	}
+	var upstream schemaMigration
+	if err := db.First(&upstream, "version = ?", 58).Error; err != nil {
+		t.Fatal(err)
+	}
+	if upstream.Name != "agent_memory_proposals" {
+		t.Fatalf("upstream v58 was rewritten: %#v", upstream)
+	}
+	if err := MigrateSchema(db); err != nil {
+		t.Fatalf("second migrate must be a no-op: %v", err)
+	}
+}
+
+func TestMigrateSchemaRejectsConflictingDesignDocumentsV59(t *testing.T) {
+	db, err := Open(Config{Driver: "sqlite", DSN: "file:migration-design-conflict-v59?mode=memory&cache=shared"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&schemaMigration{}, &model.DesignDocument{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range schemaMigrations {
+		if item.version >= 58 {
+			break
+		}
+		if err := db.Create(&schemaMigration{Version: item.version, Name: item.name, Checksum: item.checksum, AppliedAt: time.Now().UTC()}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, record := range []schemaMigration{
+		{Version: 58, Name: "design_documents", Checksum: legacyDesignDocumentsChecksum, AppliedAt: time.Now().UTC()},
+		{Version: 59, Name: "unexpected_migration", Checksum: "sha256:unexpected-v59", AppliedAt: time.Now().UTC()},
+	} {
+		copied := record
+		if err := db.Create(&copied).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	err = MigrateSchema(db)
+	if err == nil || !strings.Contains(err.Error(), "拒绝自动改写迁移账本") {
+		t.Fatalf("expected ledger conflict rejection, got %v", err)
+	}
+}
+
+func TestMigrateSchemaRejectsUnknownChecksumForLegacyDesignV58(t *testing.T) {
+	db, err := Open(Config{Driver: "sqlite", DSN: "file:migration-design-legacy-v58-checksum?mode=memory&cache=shared"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&schemaMigration{}, &model.DesignDocument{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&schemaMigration{Version: 58, Name: "design_documents", Checksum: "sha256:design-documents-v58-unknown", AppliedAt: time.Now().UTC()}).Error; err != nil {
+		t.Fatal(err)
+	}
+	err = MigrateSchema(db)
+	if err == nil || !strings.Contains(err.Error(), "拒绝自动改写迁移账本") {
+		t.Fatalf("expected checksum rejection, got %v", err)
+	}
+}
+
+func TestMigrateSchemaRepairsHalfAppliedDesignDocumentsV58Alias(t *testing.T) {
+	db, err := Open(Config{Driver: "sqlite", DSN: "file:migration-design-half-applied?mode=memory&cache=shared"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&schemaMigration{}, &model.DesignDocument{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range schemaMigrations {
+		if item.version >= 58 {
+			break
+		}
+		if err := db.Create(&schemaMigration{Version: item.version, Name: item.name, Checksum: item.checksum, AppliedAt: time.Now().UTC()}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, record := range []schemaMigration{
+		{Version: 58, Name: "design_documents", Checksum: legacyDesignDocumentsChecksum, AppliedAt: time.Now().UTC()},
+		{Version: 59, Name: "design_documents", Checksum: designDocumentsChecksum, AppliedAt: time.Now().UTC()},
+	} {
+		copied := record
+		if err := db.Create(&copied).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := MigrateSchema(db); err != nil {
+		t.Fatalf("repair half applied design migration: %v", err)
+	}
+	var upstream schemaMigration
+	if err := db.First(&upstream, "version = ?", 58).Error; err != nil {
+		t.Fatalf("upstream v58 was not applied after alias cleanup: %v", err)
+	}
+	if upstream.Name != "agent_memory_proposals" {
+		t.Fatalf("v58 must be upstream agent_memory_proposals: %#v", upstream)
+	}
+	var design schemaMigration
+	if err := db.First(&design, "version = ?", designDocumentsMigrationVersion).Error; err != nil {
+		t.Fatal(err)
+	}
+	if design.Name != "design_documents" || design.Checksum != designDocumentsChecksum {
+		t.Fatalf("unexpected design migration record: %#v", design)
+	}
+	var aliasCount int64
+	if err := db.Model(&schemaMigration{}).Where("version = 58 AND name = ?", "design_documents").Count(&aliasCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if aliasCount != 0 {
+		t.Fatalf("legacy design alias still present: %d", aliasCount)
+	}
+	if !db.Migrator().HasTable(&model.AgentMemoryProposal{}) {
+		t.Fatal("upstream v58 agent memory proposal table missing")
+	}
+	status, err := ReadSchemaStatus(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Ready || status.Current != CurrentSchemaVersion {
+		t.Fatalf("unexpected schema status: %#v", status)
+	}
+}

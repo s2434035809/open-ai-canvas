@@ -34,6 +34,11 @@ func protocolRequestFromInput(input canvasGenerationInput) protocol.GenerationRe
 	if input.Mode == "image" && strings.TrimSpace(input.Config.InterfaceType) == string(model.ChannelInterfaceOpenAIImage) {
 		aspectRatio = normalizePixelSize(aspectRatio)
 	}
+	if input.Mode == "video" && strings.TrimSpace(input.Config.InterfaceType) == string(model.ChannelInterfaceNewAPIVideo) {
+		// OpenAI Videos 的 size 是像素尺寸枚举；画布按比例保存，必须在请求边界转换，
+		// 否则上游以 plugin usage enum is not an allowed value 拒绝请求。
+		aspectRatio = openAIVideoPixelSize(aspectRatio)
+	}
 	request := protocol.GenerationRequest{
 		ImageParameters: protocolImageParameterValues(input.Config.ImageParameters),
 		Capability:      protocol.Capability(input.Mode),

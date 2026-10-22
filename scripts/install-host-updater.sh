@@ -80,6 +80,20 @@ ensure_token() {
     printf 'CANVAS_UPDATER_TOKEN=%s\nCANVAS_UPDATER_INSTALL_DIR=%s\nCANVAS_UPDATER_SOCKET=%s/updater.sock\n' "$token" "$INSTALL_DIR" "$SOCKET_DIR" > "$UPDATER_ENV"
 }
 
+# systemd 231 才引入 ReadWritePaths，更早的版本（例如 CentOS 7 的 219）只认
+# ReadWriteDirectories。关键字写错的后果是「静默忽略」：单元照常启动，但
+# ProtectSystem=full 依然把 /usr/local/bin 挂成只读，更新器在更新前检查里写自检
+# 文件就失败，网页永远停在「检查 Host Updater 安装目录：read-only file system」。
+read_write_directive() {
+    local version
+    version="$(systemctl --version 2>/dev/null | awk 'NR == 1 { print $2 }')"
+    if [[ "$version" =~ ^[0-9]+$ ]] && (( version >= 231 )); then
+        printf 'ReadWritePaths'
+    else
+        printf 'ReadWriteDirectories'
+    fi
+}
+
 install_service() {
     local temporary_service
     install -d -m 0755 "$SOCKET_DIR"
@@ -102,7 +116,7 @@ install_service() {
         'PrivateTmp=true' \
         'ProtectHome=true' \
         'ProtectSystem=full' \
-        "ReadWritePaths=${INSTALL_DIR} /var/lib/open-ai-canvas-updater ${SOCKET_DIR} /usr/local/bin" \
+        "$(read_write_directive)=${INSTALL_DIR} /var/lib/open-ai-canvas-updater ${SOCKET_DIR} /usr/local/bin" \
         '' \
         '[Install]' \
         'WantedBy=multi-user.target' > "$temporary_service"

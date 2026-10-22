@@ -160,6 +160,34 @@ func normalizePixelSize(value string) string {
 	return ""
 }
 
+// openAIVideoPixelSize 把画布比例转成 OpenAI Videos 上游接受的像素尺寸。
+// 该网关的 size 是窄枚举，只认 720p 横竖两档；其他像素值同样返回 400，
+// 因此不能把比例字符串或任意像素直接透传。
+func openAIVideoPixelSize(value string) string {
+	value = strings.TrimSpace(strings.ToLower(strings.ReplaceAll(value, "×", "x")))
+	switch value {
+	case "9:16", "2:3", "3:4":
+		return "720x1280"
+	case "", "auto", "16:9", "4:3", "1:1", "21:9":
+		return "1280x720"
+	case "1280x720", "720x1280":
+		return value
+	}
+	// 已是像素尺寸但不在枚举内时按长宽方向收敛到 720p，避免把必然失败的规格发给上游。
+	parts := strings.Split(value, "x")
+	if len(parts) == 2 {
+		width, widthErr := strconv.Atoi(strings.TrimSpace(parts[0]))
+		height, heightErr := strconv.Atoi(strings.TrimSpace(parts[1]))
+		if widthErr == nil && heightErr == nil && width > 0 && height > 0 {
+			if height > width {
+				return "720x1280"
+			}
+			return "1280x720"
+		}
+	}
+	return "1280x720"
+}
+
 func normalizeVideoSize(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" || value == "auto" {

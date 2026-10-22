@@ -5,7 +5,6 @@ import { RUNNINGHUB_PLUGIN_ID } from "@/lib/plugins/builtin/workflows";
 
 import { EDITOR_SHELL_PLUGIN_ID } from "./builtin/editor/editor-shell";
 import { DESIGN_STUDIO_PLUGIN_ID } from "./builtin/design/design-studio";
-import { PORTFOLIO_STUDIO_PLUGIN_ID } from "./builtin/portfolio/portfolio-studio";
 
 /**
  * 官方“应用型”插件清单：这些插件在管理页按用户自主启停处理，而不是系统协议。
@@ -19,7 +18,6 @@ export const OFFICIAL_APPLICATION_PLUGIN_IDS = [
     PROMPT_OPTIMIZER_PLUGIN_ID,
     ART_CRITIQUE_PLUGIN_ID,
     EDITOR_SHELL_PLUGIN_ID,
-    PORTFOLIO_STUDIO_PLUGIN_ID,
     DESIGN_STUDIO_PLUGIN_ID,
 ] as const;
 

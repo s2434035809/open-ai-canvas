@@ -1,5 +1,5 @@
 import { Popover } from "antd";
-import { BookImage, ChevronDown, ChevronRight, CircleUserRound, History as HistoryIcon, Image as ImageIcon, Infinity as InfinityIcon, Palette, PanelLeftClose, PanelLeftOpen, Plus, Video } from "lucide-react";
+import { ChevronDown, ChevronRight, CircleUserRound, History as HistoryIcon, Image as ImageIcon, Infinity as InfinityIcon, Palette, PanelLeftClose, PanelLeftOpen, Plus, Video } from "lucide-react";
 import { LayoutGroup, motion, useReducedMotion } from "motion/react";
 import { useEffect, useMemo, useRef, useState, type ComponentType, type CSSProperties } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router";
@@ -11,7 +11,6 @@ import { navigationTools, type NavigationToolSlug } from "@/constant/navigation-
 import { useWorkspaceLogout } from "@/hooks/use-workspace-logout";
 import { aceternityMotion } from "@/lib/aceternity-motion";
 import { DESIGN_STUDIO_PLUGIN_ID } from "@/lib/plugins/builtin/design/design-studio";
-import { PORTFOLIO_STUDIO_PLUGIN_ID } from "@/lib/plugins/builtin/portfolio/portfolio-studio";
 import { cn } from "@/lib/utils";
 import { preloadWorkspaceRoute } from "@/lib/workspace-route-modules";
 import { useUserStore, type FeatureAvailability } from "@/stores/use-user-store";
@@ -43,7 +42,7 @@ function toolItem(slug: NavigationToolSlug, to: string): WorkspaceNavItem {
     return { id: slug, title: tool?.label ?? slug, icon: tool?.icon, to };
 }
 
-function buildNav(features: FeatureAvailability, isAdmin: boolean, portfolioEnabled: boolean, designEnabled: boolean): { groups: WorkspaceNavGroup[]; footer: WorkspaceNavItem[] } {
+function buildNav(features: FeatureAvailability, isAdmin: boolean, designEnabled: boolean): { groups: WorkspaceNavGroup[]; footer: WorkspaceNavItem[] } {
     const groups: WorkspaceNavGroup[] = [
         {
             items: [
@@ -58,9 +57,8 @@ function buildNav(features: FeatureAvailability, isAdmin: boolean, portfolioEnab
                 ...(features.imageWorkbenchEnabled ? [{ id: "toolbox-image", title: "图片生成", icon: ImageIcon, to: "/toolbox/image" }] : []),
                 ...(features.videoWorkbenchEnabled ? [{ id: "toolbox-video", title: "视频生成", icon: Video, to: "/toolbox/video" }] : []),
                 { ...toolItem("skills", "/skills"), title: "技能" },
-                // 作品集是宿主内置的全屏工作台：启用后在侧栏常驻入口，
+                // 设计工作台是宿主内置的全屏工作台：启用后在侧栏常驻入口，
                 // 否则只能从插件中心卡片绕进去，用户会以为功能不存在。
-                ...(portfolioEnabled ? [{ id: "portfolio", title: "作品集", icon: BookImage, to: "/plugins/portfolio" }] : []),
                 ...(designEnabled ? [{ id: "design", title: "设计", icon: Palette, to: "/plugins/design" }] : []),
                 ...(features.pluginCenterEnabled || isAdmin ? [{ ...toolItem("plugins", "/plugins"), title: "插件" }] : []),
             ],
@@ -216,9 +214,7 @@ function NavItem({
                     ? "技能"
                     : item.id === "plugins"
                       ? "插件"
-                      : item.id === "portfolio"
-                        ? "作品集"
-                        : item.id === "tasks"
+                      : item.id === "tasks"
                           ? "历史"
                           : item.title.slice(0, 2);
     const rowContent = (
@@ -355,11 +351,10 @@ function NavGroup({ group, activeId, onNavigate, onOpenSearch, onLogout, collaps
 }
 
 // 菜单项 id 与实际路由不一定同名：/toolbox/image 和 /toolbox/video 共用 toolbox 前缀，
-// 只取首段会让两者都匹配不到任何菜单项，侧栏因此没有高亮；/plugins/portfolio
+// 只取首段会让两者都匹配不到任何菜单项，侧栏因此没有高亮；/plugins/design
 // 是独立工作台，高亮要落到它自己的入口而不是「插件」。
 export function workspaceNavActiveId(pathname: string, section?: string | null) {
     const segments = pathname.split("/").filter(Boolean);
-    if (pathname.startsWith("/plugins/portfolio")) return "portfolio";
     if (pathname.startsWith("/plugins/design")) return "design";
     if (segments[0] === "toolbox" && segments[1]) return `toolbox-${segments[1]}`;
     const slug = segments[0] || "home";
@@ -372,20 +367,14 @@ export function WorkspaceSidebarNav({ collapsed, onNavigate, onOpenSearch, onExp
     const [searchParams] = useSearchParams();
     const features = useUserStore((state) => state.features);
     const user = useUserStore((state) => state.user);
-    // 作品集入口跟随插件启停：后端状态优先，本地安装记录兜底。
-    const portfolioEnabled = usePluginStore((state) => {
-        const serverState = state.pluginStates[PORTFOLIO_STUDIO_PLUGIN_ID];
-        if (serverState) return serverState.effectiveEnabled;
-        return Boolean(state.installations.find((item) => item.manifest.id === PORTFOLIO_STUDIO_PLUGIN_ID)?.enabled);
-    });
-    // 设计工作台同理：入口跟随插件启停。
+    // 设计工作台入口跟随插件启停：后端状态优先，本地安装记录兜底。
     const designEnabled = usePluginStore((state) => {
         const serverState = state.pluginStates[DESIGN_STUDIO_PLUGIN_ID];
         if (serverState) return serverState.effectiveEnabled;
         return Boolean(state.installations.find((item) => item.manifest.id === DESIGN_STUDIO_PLUGIN_ID)?.enabled);
     });
     const { handleLogout } = useWorkspaceLogout();
-    const { groups, footer } = useMemo(() => buildNav(features, user?.role === "admin", portfolioEnabled, designEnabled), [features, user?.role, portfolioEnabled, designEnabled]);
+    const { groups, footer } = useMemo(() => buildNav(features, user?.role === "admin", designEnabled), [features, user?.role, designEnabled]);
 
     const activeId = workspaceNavActiveId(pathname, searchParams.get("section"));
 

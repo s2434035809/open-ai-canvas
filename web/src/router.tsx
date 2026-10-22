@@ -54,7 +54,6 @@ const NotFound = lazy(() => import("@/pages/not-found"));
 const SkillsPage = lazy(() => import("@/pages/skills"));
 const PluginsPage = lazy(() => import("@/pages/plugins"));
 const EagleLibraryPage = lazy(() => import("@/pages/plugins/eagle"));
-const PortfolioStudioPage = lazy(() => import("@/pages/portfolio"));
 const DesignStudioPage = lazy(() => import("@/pages/design"));
 const TasksPage = lazy(() => import("@/pages/tasks"));
 const ProjectsPage = lazy(loadProjectsPage);
@@ -161,14 +160,6 @@ export const router = createBrowserRouter([
                 element: (
                     <RequireAuth>
                         <RequireFeature feature="pluginCenterEnabled">{deferred(<EagleLibraryPage />)}</RequireFeature>
-                    </RequireAuth>
-                ),
-            },
-            {
-                path: "/plugins/portfolio",
-                element: (
-                    <RequireAuth>
-                        <RequireFeature feature="pluginCenterEnabled">{deferred(<PortfolioStudioPage />)}</RequireFeature>
                     </RequireAuth>
                 ),
             },

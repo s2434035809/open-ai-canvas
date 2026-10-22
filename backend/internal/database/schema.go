@@ -120,7 +120,8 @@ func Models() []any {
 		&model.TaskTextDelta{},
 		&model.TaskLog{},
 		&model.Result{},
-		&model.PortfolioDocument{},
+		// design-studio 插件（见 model/models_design.go）。
+		&model.DesignDocument{},
 	}
 }
 
