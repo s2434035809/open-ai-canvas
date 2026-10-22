@@ -206,6 +206,9 @@ var schemaMigrations = []migration{
 	}},
 	{version: 56, name: "sql_perf_indexes", checksum: "sha256:sql-perf-indexes-v56-20261016", apply: migrateSchemaV56},
 	{version: 57, name: "canvas_multi_session_sync", checksum: "sha256:canvas-multi-session-sync-v57", apply: migrateCanvasCollaboration},
+	{version: 58, name: "agent_memory_proposals", checksum: "sha256:agent-memory-proposals-v58", apply: func(tx *gorm.DB) error {
+		return tx.AutoMigrate(&model.AgentLesson{}, &model.AgentMemorySetting{}, &model.AgentMemoryProposal{}, &model.AgentMemoryRevision{})
+	}},
 	{version: 59, name: "design_documents", checksum: designDocumentsChecksum, apply: func(tx *gorm.DB) error {
 		return tx.AutoMigrate(&model.DesignDocument{})
 	}},

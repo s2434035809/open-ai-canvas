@@ -5,6 +5,17 @@
 - 修复 DX OS 内点击下载无反应：宿主给第三方 APP 的沙箱 iframe 不含 `allow-downloads`，页面内的 `<a download>` 与 `blob:` 点击会被静默拦掉。适配层改为经媒体代理取回字节后调用宿主 `file.export`（`destination: 'download'`）落盘，失败写入 `/api/__dxos/diag` 诊断日志并 `ui.notify` 提示用户，不再吞掉错误。
 - DX OS 应用清单新增 `app.yingce-main.file.write`（`file.export` 的前置权限）与 `app.yingce-main.ui.notify`。该变更只改 JS 不生效，需提高 `version`/`build` 后重新导入安装包。
 - 修复声明式协议插件的同源结果下载未使用 manifest 声明的鉴权，导致票据接口拒绝的问题；宿主发起的请求现在与创建/轮询使用同一套鉴权。
+- 移除作品集插件（portfolio-studio）：后端 app/handler/model/repository 与前端组件、页面、测试全套下线，画布入口收敛为设计工作台。
+- 设计工作台（design）落地：新增设计文档模型、仓储、接口与前端工作台；后端数据库 Schema 升至 59。
+
+## v1.6.9
+
+- 画布 Agent：统一 29 个工具的 schema、Policy、可见性、执行绑定和审批预演；增加 schema golden 与架构检查，移除旧工具副本和重复上下文管线。
+- 画布 Agent：修复多选超过 8 个节点时焦点丢失；提供有界焦点摘要，并统一 Pi 权限与模型调用步数预算。
+- Agent 记忆：将相关经验移出稳定 system 前缀；候选只在运行成功后进入待审；压缩改为可版本校验的提案，支持冲突保护和历史恢复。
+- 画布 Agent 步骤卡新增逐步撤销，使用服务端快照回执并拒绝覆盖后续画布编辑；已提交生成任务不可撤销。
+- 后端数据库 Schema 升至 58，新增 Agent 记忆压缩提案及修订记录。升级前备份数据库，并按部署流程执行 `migrate-schema up` / `verify`；不支持通过旧二进制直接回退新 schema。
+- 升级注意：需同时更新 Web 与 Backend；真实模型质量、浏览器端操作及 PostgreSQL 生产迁移未在本次自动化验证中确认。
 
 ## v1.6.8.12
 

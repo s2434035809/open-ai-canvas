@@ -147,6 +147,7 @@ export class AgentStreamError extends Error {
 export type CreateAgentRunInput = {
     reasoningMode?: AgentReasoningMode;
     profileRevision?: string;
+    /** 空字符串 = 平台级对话（未进入画布），后端不开放画布工具。 */
     canvasId: string;
     prompt: string;
     model?: string;
@@ -155,6 +156,7 @@ export type CreateAgentRunInput = {
     channelModelKey?: string;
     skillIds?: string[];
     focusNodeIds?: string[];
+    focusNodeOmittedCount?: number;
     permissionMode?: AgentPermissionMode;
     contextScope?: string[];
     budget?: { maxCredits?: number; maxGenerationTasks?: number; maxVideoSeconds?: number; maxSteps?: number };
