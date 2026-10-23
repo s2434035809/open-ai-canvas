@@ -33,6 +33,10 @@ func (s *Service) cloudAgentExecutionOutput(task *model.Task, initial cloudAgent
 		state = cloudAgentRuntime{Request: initial.Request, ParentID: initial.ParentID, CreativeAnchor: initial.CreativeAnchor, Skills: initial.Skills, Profile: initial.Profile, TaskIDs: []string{task.ID}, Events: []CloudAgentEvent{}}
 	}
 	out := agentRunOutput(task, initial)
+	out.ConversationID = run.ConversationID
+	if out.ConversationID == "" {
+		out.ConversationID = run.ID
+	}
 	out.Status = run.Status
 	out.Revision, out.CleanupPending, out.FailureMessage = run.Revision, run.CleanupPending, run.FailureMessage
 	out.UpdatedAt = run.UpdatedAt
@@ -54,7 +58,7 @@ func (s *Service) cloudAgentExecutionOutput(task *model.Task, initial cloudAgent
 	if len(out.Events) > 0 {
 		out.LatestSeq = out.Events[len(out.Events)-1].Seq
 	}
-	if view.SinceSeq == 0 && !view.FromStart && len(out.Events) < out.EventCount {
+	if !view.FromStart && view.SinceSeq == 0 && len(out.Events) < out.EventCount {
 		out.EventsTruncated = true
 	}
 	out.Approval = state.Approval
@@ -340,6 +344,9 @@ func (s *Service) advanceCloudAgent(run *model.CloudAgentExecution) (err error) 
 			state.StepSnapshotHash = cloudAgentCaptureStepSnapshotHash(calls)
 			if len(calls) > 0 {
 				state.Canonical.Messages = append(state.Canonical.Messages, map[string]any{"role": "assistant", "content": result.Text, "tool_calls": calls})
+			}
+			if strings.TrimSpace(result.Text) != "" {
+				cloudAgentConsumeInspectedImages(&state.Canonical)
 			}
 			if len(calls) == 0 {
 				if len(state.PendingInterjections) > 0 {

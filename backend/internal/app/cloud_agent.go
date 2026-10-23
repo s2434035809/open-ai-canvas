@@ -135,6 +135,7 @@ type CloudAgentRun struct {
 	CreationContextMessageIDs []string                   `json:"creationContextMessageIds,omitempty"`
 	Retry                     *CloudAgentCreationRetry   `json:"retry,omitempty"`
 	ID                        string                     `json:"id"`
+	ConversationID            string                     `json:"conversationId,omitempty"`
 	IdempotencyKey            string                     `json:"idempotencyKey,omitempty"`
 	UserPrompt                string                     `json:"userPrompt,omitempty"`
 	SessionID                 string                     `json:"sessionId,omitempty"`
@@ -904,6 +905,9 @@ func (s *Service) CreateCloudAgentRun(userID string, req CloudAgentRequest, pare
 		var busy *repository.CanvasAgentBusyError
 		if errors.As(err, &busy) {
 			return nil, cloudAgentBusyRejection(req.CanvasID, err.Error(), busy.Activity)
+		}
+		if errors.Is(err, repository.ErrCloudAgentStaleParent) {
+			return nil, &AppError{Status: 409, Code: 409, Reason: "agent_conversation_stale_parent", Message: err.Error()}
 		}
 		return nil, err
 	}

@@ -47,6 +47,7 @@ func RegisterCanvasAPI(api *gin.RouterGroup, svc *service.Service) {
 	// design-studio 插件（见 handler/design.go）。
 	RegisterDesignRoutes(api, svc)
 	RegisterLibraryRoutes(api, svc)
+	RegisterFeedbackRoutes(api, svc)
 	projectAPI := api.Group("")
 	projectAPI.Use(RequireFeature(svc, service.FeatureShortDrama))
 	RegisterProjectRoutes(projectAPI, svc)

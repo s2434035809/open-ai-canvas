@@ -683,11 +683,17 @@ func (s *Service) DecideCloudAgentApproval(userID, id, approvalID, decision, rea
 				if err := commitCloudAgentPiRejectedReceipt(repo, current, &state); err != nil {
 					return err
 				}
+				rejectionText := "已拒绝本次操作，本次操作未执行。"
+				rejectionEndText := "本轮已结束：已拒绝本次操作"
+				if state.Approval != nil && cloudAgentMediaTool(state.Approval.Call.Function.Name) {
+					rejectionText = "已拒绝本次生成，草稿节点仍保留在画布中；未提交任务、未产生扣费。你可以继续编辑后重新申请。"
+					rejectionEndText = "本轮已结束：已拒绝本次生成"
+				}
 				current.Status = "rejected"
 				current.FailureMessage = ""
 				state.Approval = nil
-				cloudAgentDropInterjections(id, "本轮已结束：用户拒绝", &state)
-				message := "已拒绝本次生成，草稿节点仍保留在画布中；未提交任务、未产生扣费。你可以继续编辑后重新申请。"
+				cloudAgentDropInterjections(id, rejectionEndText, &state)
+				message := rejectionText
 				if state.Request.Surface == "creation" {
 					message = "已拒绝本次生成；未提交任务、未产生扣费。"
 				}

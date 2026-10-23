@@ -1,5 +1,6 @@
 import { compactApiParams, http, apiBaseURL, ApiError } from "@/services/api/request";
 import { consumeTaskTextStream, createTaskTextStreamParser } from "@/services/api/task-text-stream";
+import { getActiveUserScope } from "@/lib/user-scope";
 
 export type AgentPermissionMode = "read_only" | "auto" | "request_approval";
 export type AgentOutputPreference = "concise" | "detailed";
@@ -132,6 +133,7 @@ export type AgentRun = {
     id: string;
     idempotencyKey?: string;
     sessionId?: string;
+    conversationId?: string;
     userPrompt?: string;
     parentId?: string;
     canvasId: string;
@@ -157,6 +159,18 @@ export type AgentRun = {
     attachments?: AgentCreationAttachment[];
     creationContextMessageIds?: string[];
     approval?: AgentApproval;
+};
+
+export type AgentConversationSummary = {
+    id: string;
+    canvasId: string;
+    title: string;
+    latestRunId: string;
+    status: AgentRun["status"];
+    revision: number;
+    cleanupPending?: boolean;
+    createdAt: string;
+    updatedAt: string;
 };
 
 export type AgentEvent = {
@@ -244,13 +258,15 @@ export type ListAgentSessionRunsOptions = {
 export function isAgentAdmissionRejection(error: unknown): boolean {
     if (!(error instanceof ApiError)) return false;
     const status = error.status === 200 ? error.code : error.status;
-    return [400, 401, 402, 403, 404, 413, 422].includes(status || 0) || error.reason === "canvas_agent_busy" || error.reason === "agent_session_stale_parent";
+    return [400, 401, 402, 403, 404, 413, 422].includes(status || 0) || error.reason === "canvas_agent_busy" || error.reason === "agent_session_stale_parent" || error.reason === "agent_conversation_stale_parent";
 }
 
 async function submitAgentRequest(path: string, input: CreateAgentRunInput) {
     const body = JSON.parse(JSON.stringify(input)) as CreateAgentRunInput;
     let outcomeUnconfirmed = false;
+    const scope = getActiveUserScope();
     for (let attempt = 0; ; attempt++) {
+        if (getActiveUserScope() !== scope) throw new DOMException("账号已切换，已停止原账号的请求重试", "AbortError");
         try {
             return await http.post<{ run: AgentRun }>(path, body, { timeout: 15_000 });
         } catch (cause) {
@@ -329,7 +345,21 @@ export function updateAgentProfile(input: { scope: AgentProfileScope; projectId?
 }
 
 export function getAgentRun(runId: string, signal?: AbortSignal, options?: { sinceSeq?: number; eventLimit?: number; fromStart?: boolean }) {
-    return http.get<{ run: AgentRun }>(`/agent/runs/${encodeURIComponent(runId)}`, { signal, timeout: 15_000, params: compactApiParams({ sinceSeq: options?.sinceSeq, eventLimit: options?.eventLimit, fromStart: options?.fromStart ? 1 : undefined }) });
+    return http.get<{ run: AgentRun }>(`/agent/runs/${encodeURIComponent(runId)}`, {
+        signal,
+        timeout: 15_000,
+        params: compactApiParams({ sinceSeq: options?.sinceSeq, eventLimit: options?.eventLimit, fromStart: options?.fromStart ? "1" : undefined }),
+    });
+}
+
+export function listAgentConversations(options: { canvasId: string; before?: string; limit?: number; signal?: AbortSignal }) {
+    const { signal, ...params } = options;
+    return http.get<{ items: AgentConversationSummary[]; nextCursor?: string }>("/agent/conversations", { signal, params, timeout: 15_000 });
+}
+
+export function listAgentConversationRuns(conversationId: string, options: { after?: string; limit?: number; signal?: AbortSignal } = {}) {
+    const { signal, ...params } = options;
+    return http.get<{ items: AgentRun[]; nextCursor?: string }>(`/agent/conversations/${encodeURIComponent(conversationId)}/runs`, { signal, params, timeout: 15_000 });
 }
 
 export function cancelAgentRun(runId: string) {

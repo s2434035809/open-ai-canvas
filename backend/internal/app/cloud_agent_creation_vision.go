@@ -94,16 +94,19 @@ func (s *Service) attachCloudAgentCreationImages(userID string, req CloudAgentRe
 		for index := len(canonical.Messages) - 1; index >= 0; index-- {
 			message := canonical.Messages[index]
 			if stringField(message, "role") == "tool" {
-				inspection, exists := state.PiInspectedImages[stringField(message, "tool_call_id")]
-				id := stringValue(inspection.Receipt["resourceId"])
-				_, bound := active[id]
-				if exists && id != "" && inspection.ImageURL == "resource:"+id && !bound {
-					groupEnd := index
-					for groupEnd+1 < len(canonical.Messages) && stringField(canonical.Messages[groupEnd+1], "role") == "tool" {
-						groupEnd++
+				groupEnd := index
+				for groupEnd+1 < len(canonical.Messages) && stringField(canonical.Messages[groupEnd+1], "role") == "tool" {
+					groupEnd++
+				}
+				for _, inspection := range state.inspectedImages(stringField(message, "tool_call_id")) {
+					id := stringValue(inspection.Receipt["resourceId"])
+					if _, bound := active[id]; bound {
+						continue
 					}
-					active[id] = groupEnd
-					priority = append(priority, id)
+					if id != "" && inspection.ImageURL == "resource:"+id {
+						active[id] = groupEnd
+						priority = append(priority, id)
+					}
 				}
 			}
 		}
@@ -195,8 +198,5 @@ func (state *cloudAgentRuntime) bindCreationImage(callID, resourceID, kind strin
 	if kind != "image" || callID == "" {
 		return
 	}
-	if state.PiInspectedImages == nil {
-		state.PiInspectedImages = map[string]cloudAgentImageInspection{}
-	}
-	state.PiInspectedImages[callID] = cloudAgentImageInspection{Receipt: map[string]any{"resourceId": resourceID}, ImageURL: "resource:" + resourceID}
+	state.bindInspectedImages(callID, []cloudAgentImageInspection{{Receipt: map[string]any{"resourceId": resourceID}, ImageURL: "resource:" + resourceID}})
 }

@@ -15,6 +15,7 @@ const requestPath = join(dir, "request.ts");
 writeFileSync(requestPath, `export { ApiError } from ${JSON.stringify(fileURLToPath(new URL("services/api/request.ts", root)))}; export const apiBaseURL = "https://agent.invalid/api"; export const compactApiParams = (params) => Object.fromEntries(Object.entries(params).filter(([, value]) => value !== undefined)); export const http = { post: async () => { throw new Error("unexpected POST"); } };`);
 writeFileSync(join(dir, "agent.ts"), readFileSync(new URL("services/api/agent.ts", root), "utf8")
     .replace('"@/services/api/request"', JSON.stringify(requestPath))
+    .replace('"@/lib/user-scope"', JSON.stringify(fileURLToPath(new URL("lib/user-scope.ts", root))))
     .replace('"@/services/api/task-text-stream"', JSON.stringify(fileURLToPath(new URL("services/api/task-text-stream.ts", root)))));
 const api: typeof import("../src/services/api/agent") = await import(join(dir, "agent.ts"));
 const transport = await import(requestPath);
@@ -251,6 +252,25 @@ describe("Agent admission replay and durable pending records", () => {
         expect(api.isAgentAdmissionRejection(new ApiError("busy", { status: 409, reason: "canvas_agent_busy" }))).toBe(true);
         expect(api.isAgentAdmissionRejection(new ApiError("conflict", { status: 409 }))).toBe(false);
         expect(api.isAgentAdmissionRejection(new ApiError("timeout", { status: 408 }))).toBe(false);
+    });
+
+    it("does not retry an original account's POST with the next account's cookies", async () => {
+        const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+        let scope = "original-account";
+        Object.defineProperty(globalThis, "window", { configurable: true, value: { localStorage: { getItem: () => scope } } });
+        let attempts = 0;
+        transport.http.post = async () => {
+            attempts++;
+            scope = "next-account";
+            throw { retryable: true };
+        };
+        try {
+            await expect(api.sendAgentMessage("parent", input)).rejects.toMatchObject({ name: "AbortError" });
+            expect(attempts).toBe(1);
+        } finally {
+            if (previousWindow) Object.defineProperty(globalThis, "window", previousWindow);
+            else Reflect.deleteProperty(globalThis, "window");
+        }
     });
 
     it("restores the full original request and message identity, isolated by conversation", async () => {

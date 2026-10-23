@@ -128,6 +128,8 @@ func Models() []any {
 		&model.Result{},
 		// design-studio 插件（见 model/models_design.go）。
 		&model.DesignDocument{},
+		// 用户反馈（上游 1.6.9.2）。
+		&model.UserFeedback{},
 	}
 }
 

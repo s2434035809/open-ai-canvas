@@ -34,7 +34,7 @@ func TestHomepageAgentMigrationUpgradesSchema60WithoutChangingExistingData(t *te
 	if err := db.Where("version <= ?", 60).Order("version").Find(&originalHistory).Error; err != nil {
 		t.Fatal(err)
 	}
-	for _, table := range []any{&model.AgentSession{}, &model.CloudAgentReceipt{}, &model.CreationPreferences{}, &model.ResourceTransfer{}} {
+	for _, table := range []any{&model.AgentSession{}, &model.CloudAgentReceipt{}, &model.CreationPreferences{}, &model.ResourceTransfer{}, &model.UserFeedback{}} {
 		if err := db.Migrator().DropTable(table); err != nil {
 			t.Fatal(err)
 		}
@@ -57,7 +57,8 @@ func TestHomepageAgentMigrationUpgradesSchema60WithoutChangingExistingData(t *te
 			}
 		}
 	}
-	if err := db.Where("version = ?", 61).Delete(&schemaMigration{}).Error; err != nil {
+	// 回到 v60 账本：把 60 之后的所有记录清掉，避免断言绑定在某一个具体版本号上。
+	if err := db.Where("version > ?", 60).Delete(&schemaMigration{}).Error; err != nil {
 		t.Fatal(err)
 	}
 	if status, err := ReadSchemaStatus(db); err != nil || status.Current != 60 || status.Ready {
@@ -68,7 +69,7 @@ func TestHomepageAgentMigrationUpgradesSchema60WithoutChangingExistingData(t *te
 			t.Fatal(err)
 		}
 	}
-	if status, err := ReadSchemaStatus(db); err != nil || status.Current != 61 || !status.Ready {
+	if status, err := ReadSchemaStatus(db); err != nil || status.Current != CurrentSchemaVersion || !status.Ready {
 		t.Fatalf("upgraded schema: %+v, %v", status, err)
 	}
 	var history []schemaMigration
@@ -93,7 +94,7 @@ func TestHomepageAgentMigrationUpgradesSchema60WithoutChangingExistingData(t *te
 	if savedResource.BrowserDirect || savedResource.TransferPending || savedTask.IdempotencyKey != nil {
 		t.Fatal("existing records received unexpected new-field values")
 	}
-	for _, table := range []any{&model.AgentSession{}, &model.CloudAgentReceipt{}, &model.CreationPreferences{}, &model.ResourceTransfer{}} {
+	for _, table := range []any{&model.AgentSession{}, &model.CloudAgentReceipt{}, &model.CreationPreferences{}, &model.ResourceTransfer{}, &model.UserFeedback{}} {
 		if !db.Migrator().HasTable(table) {
 			t.Fatalf("missing table: %T", table)
 		}

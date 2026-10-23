@@ -11,7 +11,10 @@ import (
 	"gorm.io/gorm"
 )
 
-const CurrentSchemaVersion int64 = 61
+// v58-v61 由 dev 线占用（agent_memory_proposals / channel_model_protocol_length /
+// design_documents / homepage_agent_workflow），上游 1.6.9.2 的 user_feedbacks 顺延到 v62，
+// 并在启动时把上游库的 v60/user_feedbacks 账本记录归一化到 v62。
+const CurrentSchemaVersion int64 = 62
 
 const baselineSchemaChecksum = "sha256:open-ai-canvas-schema-v1-20260830"
 const schemaMigrationAppliedAtIndexChecksum = "sha256:schema-migrations-applied-at-index-v2-20260830"
@@ -32,6 +35,11 @@ const resourceThumbnailChecksum = "sha256:resource-thumbnail-v41-20260927"
 const workbenchToolsMigrationName = "workbench_tools_and_presets"
 const workbenchToolsMigrationChecksum = "sha256:workbench-tools-presets-v54-20261014"
 const legacyWorkbenchToolsMigrationChecksum = "sha256:workbench-tools-presets-v51-20261014"
+const userFeedbacksMigrationName = "user_feedbacks"
+
+// userFeedbacksChecksum 沿用上游 v60 的账本身份字符串：账本记录跨版本号搬移时
+// 只改 version，不改 name/checksum，才能与上游数据库保持一致。
+const userFeedbacksChecksum = "sha256:user-feedbacks-v60-20261020"
 
 // designDocumentsChecksum 保持历史字符串不变：账本身份是已落库数据的一部分，
 // 改名会让已升级的库在 checksum 校验阶段拒绝启动。版本号由 v59 顺延到 v60，
@@ -221,6 +229,10 @@ var schemaMigrations = []migration{
 	}},
 	// 首页 Agent 工作流的表结构来自上游 PR #823；dev 已占用 v58-v60，这里顺延为 v61。
 	{version: 61, name: "homepage_agent_workflow", checksum: "sha256:homepage-agent-workflow-v61", apply: migrateHomepageAgentWorkflow},
+	// 用户反馈表来自上游 1.6.9.2；dev 已占用 v60/v61，这里顺延为 v62。
+	{version: 62, name: userFeedbacksMigrationName, checksum: userFeedbacksChecksum, apply: func(tx *gorm.DB) error {
+		return tx.AutoMigrate(&model.UserFeedback{})
+	}},
 }
 
 func migrateChannelModelProtocolLength(tx *gorm.DB) error {
@@ -600,6 +612,63 @@ const workbenchToolsMigrationVersion int64 = 54
 
 const designDocumentsMigrationVersion int64 = 60
 
+// userFeedbacksMigrationVersion 是 v62：上游 1.6.9.2 把 user_feedbacks 记在 v60，
+// 而 dev 的 v60/v61 已被 design_documents / homepage_agent_workflow 占用。
+const userFeedbacksMigrationVersion int64 = 62
+
+// normalizeLegacyUserFeedbacksMigration 把上游 1.6.9.2 数据库中的
+// v60/user_feedbacks 账本记录顺延到 v62，释放 v60 给 design_documents。
+// 只改写身份完全匹配的记录，其他占用一律拒绝。
+func normalizeLegacyUserFeedbacksMigration(tx *gorm.DB) error {
+	var legacy schemaMigration
+	err := tx.First(&legacy, "version = ?", 60).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("读取数据库迁移 60：%w", err)
+	}
+	if legacy.Name != userFeedbacksMigrationName {
+		return nil
+	}
+	if legacy.Checksum != userFeedbacksChecksum {
+		return fmt.Errorf("数据库迁移 60 记录为 user_feedbacks 但校验和为 %s；拒绝自动改写迁移账本", legacy.Checksum)
+	}
+	if !tx.Migrator().HasTable(&model.UserFeedback{}) {
+		return fmt.Errorf("数据库迁移 60 记录为用户反馈迁移，但用户反馈表不存在；请从备份恢复后再升级")
+	}
+
+	var occupied schemaMigration
+	err = tx.First(&occupied, "version = ?", userFeedbacksMigrationVersion).Error
+	if err == nil {
+		if occupied.Name != userFeedbacksMigrationName || occupied.Checksum != userFeedbacksChecksum {
+			return fmt.Errorf("数据库迁移 60 为用户反馈迁移，但 %d 已被 %s 占用；拒绝自动改写迁移账本", userFeedbacksMigrationVersion, occupied.Name)
+		}
+		removed := tx.Where("version = ? AND name = ? AND checksum = ?", legacy.Version, legacy.Name, legacy.Checksum).Delete(&schemaMigration{})
+		if removed.Error != nil {
+			return fmt.Errorf("清理旧用户反馈迁移记录：%w", removed.Error)
+		}
+		if removed.RowsAffected != 1 {
+			return fmt.Errorf("清理旧用户反馈迁移记录影响 %d 行，拒绝继续启动", removed.RowsAffected)
+		}
+		return nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return fmt.Errorf("读取数据库迁移 %d：%w", userFeedbacksMigrationVersion, err)
+	}
+
+	result := tx.Model(&schemaMigration{}).
+		Where("version = ? AND name = ? AND checksum = ?", legacy.Version, legacy.Name, legacy.Checksum).
+		Updates(map[string]any{"version": userFeedbacksMigrationVersion})
+	if result.Error != nil {
+		return fmt.Errorf("归一化用户反馈迁移记录：%w", result.Error)
+	}
+	if result.RowsAffected != 1 {
+		return fmt.Errorf("归一化用户反馈迁移记录影响 %d 行，拒绝继续启动", result.RowsAffected)
+	}
+	return nil
+}
+
 // designDocumentsLegacyAliasVersion 是上游 v59 之前，本地把 design_documents
 // 记在 v59 的版本号。上游 1.6.9 起 v59 属于 channel_model_protocol_length。
 const designDocumentsLegacyAliasVersion int64 = 59
@@ -730,6 +799,9 @@ func MigrateSchema(db *gorm.DB) error {
 			return err
 		}
 		if err := normalizeLegacyDesignDocumentsMigration(tx); err != nil {
+			return err
+		}
+		if err := normalizeLegacyUserFeedbacksMigration(tx); err != nil {
 			return err
 		}
 		plan, err := migrationsForDatabase(tx)

@@ -41,6 +41,7 @@ func RegisterAgentRoutes(r *gin.RouterGroup, svc *service.Service) {
 		}
 		ok(c, view)
 	})
+
 	// Sessions are the durable conversation index. Runs remain immutable turns;
 	// this endpoint lets another device recover the same session without relying
 	// on browser-local state.
@@ -201,6 +202,44 @@ func RegisterAgentRoutes(r *gin.RouterGroup, svc *service.Service) {
 		}
 		ok(c, gin.H{"session": item, "runs": items, "nextRunCursor": cursor})
 	})
+
+	r.GET("/agent/conversations", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		limit, err := agentConversationLimit(c)
+		if err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
+		page, err := svc.CloudAgentConversations(user.ID, c.Query("canvasId"), c.Query("before"), limit)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, page)
+	})
+	r.GET("/agent/conversations/:id/runs", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		limit, err := agentConversationLimit(c)
+		if err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
+		page, err := svc.CloudAgentConversationRuns(user.ID, c.Param("id"), c.Query("after"), limit)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, page)
+	})
+
 	// Profiles are durable preference data, not an authorization surface. The
 	// service validates scope ownership and the compiler injects the effective
 	// layers only after the code-level policy has been fixed.
@@ -553,13 +592,30 @@ func writeAgentSSE(c *gin.Context, event string, id int64, value any) {
 // 请求更大的页没有意义（单次响应体积），直接拒绝比静默截断更容易被发现。
 const agentRunEventQueryLimit = 500
 
+func agentConversationLimit(c *gin.Context) (int, error) {
+	raw, present := c.GetQuery("limit")
+	if !present {
+		return 100, nil
+	}
+	limit, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || limit < 1 || limit > 100 {
+		return 0, errors.New("limit 必须是 1–100 之间的整数")
+	}
+	return limit, nil
+}
+
 func agentRunViewOptions(c *gin.Context) (service.CloudAgentRunViewOptions, error) {
 	options := service.CloudAgentRunViewOptions{}
 	if raw := strings.TrimSpace(c.Query("fromStart")); raw != "" {
-		if raw != "1" {
-			return options, errors.New("fromStart 只能是 1")
+		// 旧前端传 "1"，新契约使用布尔值；两者都接受，避免升级窗口期断流。
+		switch raw {
+		case "1", "true":
+			options.FromStart = true
+		case "0", "false":
+			options.FromStart = false
+		default:
+			return options, errors.New("fromStart 必须是布尔值")
 		}
-		options.FromStart = true
 	}
 	for _, item := range []struct {
 		name  string

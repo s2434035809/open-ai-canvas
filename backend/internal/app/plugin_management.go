@@ -16,6 +16,7 @@ const (
 	PluginMediaConversion     = "media-conversion"
 	PluginEditorShell         = "editor-shell"
 	PluginDesignStudio        = "design-studio"
+	PluginUserFeedback        = "user-feedback"
 
 	PluginOriginOfficial = "official"
 	PluginOriginSystem   = "system"
@@ -89,6 +90,10 @@ var officialApplicationPolicies = map[string]PluginManagementView{
 		ActivationScope: PluginScopeUser, ConfigurationScope: PluginConfigurationNone,
 	},
 	PluginDesignStudio: {
+		Origin: PluginOriginOfficial, Kind: PluginKindApplication,
+		ActivationScope: PluginScopeUser, ConfigurationScope: PluginConfigurationNone,
+	},
+	PluginUserFeedback: {
 		Origin: PluginOriginOfficial, Kind: PluginKindApplication,
 		ActivationScope: PluginScopeUser, ConfigurationScope: PluginConfigurationNone,
 	},
@@ -233,7 +238,8 @@ func (s *Service) pluginStateForUser(actor *model.User, pluginID string, items [
 		if !userConfigured {
 			// 设计工作台与媒体转换一样是随宿主一起交付的本地创作能力，
 			// 没有需要额外配置的外部依赖，所以首次默认启用；用户仍可在插件中心关闭。
-			if pluginID == PluginMediaConversion || pluginID == PluginDesignStudio {
+			// 用户反馈是上游 1.6.9.2 的宿主内置入口，同样无需外部依赖。
+			if pluginID == PluginMediaConversion || pluginID == PluginDesignStudio || pluginID == PluginUserFeedback {
 				userEnabled = true
 			} else if hasRuntime && pluginID == WorkflowPluginRunningHub {
 				userEnabled = runtimePlugin.Status == "enabled"

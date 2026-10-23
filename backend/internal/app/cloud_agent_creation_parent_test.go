@@ -102,7 +102,7 @@ func TestCreationAgentRecoveredReceiptKeepsIdentityAndInterjection(t *testing.T)
 	})
 }
 
-func TestCanvasAgentStillAllowsExplicitCompletedParentBranch(t *testing.T) {
+func TestCanvasAgentRejectsStaleParentBranch(t *testing.T) {
 	s, db, request, parent := parentBusyTestRun(t, "canvas")
 	if err := db.Model(&model.CloudAgentExecution{}).Where("id = ?", parent.ID).Update("status", "completed").Error; err != nil {
 		t.Fatal(err)
@@ -116,8 +116,16 @@ func TestCanvasAgentStillAllowsExplicitCompletedParentBranch(t *testing.T) {
 	if err := db.Model(&model.CloudAgentExecution{}).Where("id = ?", child.ID).Update("status", "completed").Error; err != nil {
 		t.Fatal(err)
 	}
+	// 画布与首页一致：旧父轮不再接受分叉，必须同步最新一轮后重发。
 	next.IdempotencyKey = "canvas-explicit-branch"
-	if _, err := s.CreateCloudAgentRun("user", next, parent.ID); err != nil {
-		t.Fatalf("creation-only guard changed canvas branching: %v", err)
+	_, err = s.CreateCloudAgentRun("user", next, parent.ID)
+	var failure *AppError
+	if !errors.As(err, &failure) || failure.Status != 409 || string(failure.Reason) != "agent_conversation_stale_parent" {
+		t.Fatalf("stale canvas parent admitted another branch: %+v", err)
+	}
+	next.IdempotencyKey = "canvas-latest-tip"
+	continued, err := s.CreateCloudAgentRun("user", next, child.ID)
+	if err != nil || continued.ParentID != child.ID {
+		t.Fatalf("latest canvas parent was rejected: %+v %v", continued, err)
 	}
 }

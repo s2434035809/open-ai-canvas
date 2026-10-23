@@ -673,12 +673,14 @@ export function CreationComposer(props: ComposerProps) {
                                     <button type="button" className="creation-chat-control" aria-pressed={props.textStreaming} disabled={interactionBusy} onClick={() => props.setTextStreaming(!props.textStreaming)}>
                                         <Waves />
                                         <span>流式</span>
+                                        {props.textStreaming ? <span className="size-1.5 rounded-full bg-blue-400 shrink-0 shadow-sm" /> : null}
                                     </button>
                                 </Tooltip>
                                 <Tooltip title={interactionBusy ? "生成中，此开关将在下次发送时生效" : props.textThinking ? "思考已开启，会展示模型返回的推理摘要" : "开启模型思考"}>
                                     <button type="button" className="creation-chat-control" aria-pressed={props.textThinking} disabled={interactionBusy} onClick={() => props.setTextThinking(!props.textThinking)}>
                                         <Brain />
                                         <span>思考</span>
+                                        {props.textThinking ? <span className="size-1.5 rounded-full bg-blue-400 shrink-0 shadow-sm" /> : null}
                                     </button>
                                 </Tooltip>
                             </>
@@ -1095,7 +1097,7 @@ function GenerationSettingsMenu(props: ComposerProps) {
                             </SettingSection>
                         ) : null}
                         {props.imageProfile.maxOutputs > 1 ? (
-                            <SettingSection title="生成数量" value={`${props.count} 张`}>
+                            <SettingSection title="生成张数" value={`${props.count} 张`}>
                                 <div className="creation-parameter-content">
                                     <div className="creation-choice-grid is-count">
                                         {countOptions
@@ -1113,7 +1115,7 @@ function GenerationSettingsMenu(props: ComposerProps) {
                                             pattern="[0-9]*"
                                             value={props.count}
                                             onChange={(event) => props.setCount(String(Math.max(1, Math.min(props.imageProfile.maxOutputs, Number(event.target.value) || 1))))}
-                                            aria-label={`生成数量，范围 1 到 ${props.imageProfile.maxOutputs}`}
+                                            aria-label={`生成张数，范围 1 到 ${props.imageProfile.maxOutputs}`}
                                         />
                                         <em>张</em>
                                     </label>

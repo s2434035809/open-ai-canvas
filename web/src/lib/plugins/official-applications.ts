@@ -19,6 +19,7 @@ export const OFFICIAL_APPLICATION_PLUGIN_IDS = [
     ART_CRITIQUE_PLUGIN_ID,
     EDITOR_SHELL_PLUGIN_ID,
     DESIGN_STUDIO_PLUGIN_ID,
+    "user-feedback",
 ] as const;
 
 const officialApplicationIdSet = new Set<string>(OFFICIAL_APPLICATION_PLUGIN_IDS);

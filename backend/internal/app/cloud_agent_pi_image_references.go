@@ -1,9 +1,44 @@
 package app
 
+// inspectedImages 返回一次工具调用对应的全部图片，兼容旧检查点的单图记录。
+func (state *cloudAgentRuntime) inspectedImages(callID string) []cloudAgentImageInspection {
+	if state == nil || callID == "" {
+		return nil
+	}
+	if group, ok := state.PiInspectedImageGroups[callID]; ok {
+		return group
+	}
+	if inspection, ok := state.PiInspectedImages[callID]; ok {
+		return []cloudAgentImageInspection{inspection}
+	}
+	return nil
+}
+
+// bindInspectedImages 写入一次工具调用的图片结果：单图沿用旧字段，
+// 多图写入分组字段，避免同一 call.ID 只能保留一张。
+func (state *cloudAgentRuntime) bindInspectedImages(callID string, inspections []cloudAgentImageInspection) {
+	if state == nil || callID == "" || len(inspections) == 0 {
+		return
+	}
+	if len(inspections) == 1 {
+		if state.PiInspectedImages == nil {
+			state.PiInspectedImages = map[string]cloudAgentImageInspection{}
+		}
+		state.PiInspectedImages[callID] = inspections[0]
+		delete(state.PiInspectedImageGroups, callID)
+		return
+	}
+	if state.PiInspectedImageGroups == nil {
+		state.PiInspectedImageGroups = map[string][]cloudAgentImageInspection{}
+	}
+	state.PiInspectedImageGroups[callID] = inspections
+	delete(state.PiInspectedImages, callID)
+}
+
 // Pi keeps text tool receipts in its native journal; restore authorized image
 // content only while the corresponding tool result remains in that branch.
 func cloudAgentPiAttachInspectedImages(state *cloudAgentRuntime, canonical *canonicalAgentRequest) {
-	if state == nil || canonical == nil || len(state.PiInspectedImages) == 0 {
+	if state == nil || canonical == nil || (len(state.PiInspectedImages) == 0 && len(state.PiInspectedImageGroups) == 0) {
 		return
 	}
 	messages := make([]map[string]any, 0, len(canonical.Messages))
@@ -13,8 +48,11 @@ func cloudAgentPiAttachInspectedImages(state *cloudAgentRuntime, canonical *cano
 		if stringField(message, "role") != "tool" {
 			continue
 		}
-		if inspection, ok := state.PiInspectedImages[stringField(message, "tool_call_id")]; ok && inspection.ImageURL != "" {
-			inspections = append(inspections, inspection)
+		callID := stringField(message, "tool_call_id")
+		for _, inspection := range state.inspectedImages(callID) {
+			if inspection.ImageURL != "" {
+				inspections = append(inspections, inspection)
+			}
 		}
 		if len(inspections) > 0 && (index+1 == len(canonical.Messages) || stringField(canonical.Messages[index+1], "role") != "tool") {
 			var existing []string

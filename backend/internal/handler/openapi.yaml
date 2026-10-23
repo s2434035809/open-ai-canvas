@@ -27,6 +27,8 @@ tags:
   - name: admin
   - name: skills
   - name: workbench
+  - name: feedback
+    description: 用户反馈与管理员收件箱
 paths:
   /projects/{id}/assets/{assetId}/image:
     put:
@@ -113,6 +115,174 @@ paths:
         "403": {$ref: "#/components/responses/Error"}
         "404": {$ref: "#/components/responses/Error"}
         "500": {$ref: "#/components/responses/Error"}
+  /feedbacks:
+    post:
+      tags: [feedback]
+      summary: 提交用户反馈
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/FeedbackSubmission"}
+      responses:
+        "200":
+          description: 成功信封，data 为新建反馈
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data: {$ref: "#/components/schemas/UserFeedback"}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "500": {$ref: "#/components/responses/Error"}
+  /feedbacks/my:
+    get:
+      tags: [feedback]
+      summary: 读取当前用户自己的反馈列表
+      responses:
+        "200":
+          description: 成功信封，data 为按创建时间倒序排列的反馈数组
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: {$ref: "#/components/schemas/UserFeedback"}
+        "401": {$ref: "#/components/responses/Error"}
+        "500": {$ref: "#/components/responses/Error"}
+  /feedbacks/attachments:
+    post:
+      tags: [feedback]
+      summary: 上传用户反馈图片或视频附件
+      description: 单文件最大 50 MiB；整个 multipart 请求体最大 55 MiB。文件交由现有资源服务保存。
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: {type: string, format: binary}
+      responses:
+        "200":
+          description: 成功信封，data 为附件元数据
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data: {$ref: "#/components/schemas/FeedbackAttachment"}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "500": {$ref: "#/components/responses/Error"}
+  /admin/feedbacks:
+    get:
+      tags: [feedback, admin]
+      summary: 管理员筛选和分页查询反馈
+      parameters:
+        - {in: query, name: type, schema: {type: string, enum: [all, bug, feature, improvement, other]}}
+        - {in: query, name: status, schema: {type: string, enum: [all, pending, processing, resolved, closed, archived]}}
+        - {in: query, name: keyword, schema: {type: string}, description: 匹配标题、正文、用户名或联系方式}
+        - {in: query, name: archived, schema: {type: boolean}}
+        - {in: query, name: page, schema: {type: integer, minimum: 1, default: 1}}
+        - {in: query, name: pageSize, schema: {type: integer, minimum: 1, default: 20}, description: 大于 100 时服务端使用默认值 20}
+      responses:
+        "200":
+          description: 成功信封，data 含 list、total、page、limit
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data: {$ref: "#/components/schemas/FeedbackListResult"}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "500": {$ref: "#/components/responses/Error"}
+  /admin/feedbacks/{id}:
+    parameters:
+      - {in: path, name: id, required: true, schema: {type: string}}
+    patch:
+      tags: [feedback, admin]
+      summary: 更新反馈状态、答复或归档标志
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/FeedbackAdminUpdate"}
+      responses:
+        "200":
+          description: 成功信封，data 为更新后的反馈
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data: {$ref: "#/components/schemas/UserFeedback"}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "500": {$ref: "#/components/responses/Error"}
+    delete:
+      tags: [feedback, admin]
+      summary: 删除反馈记录
+      responses:
+        "200":
+          description: 成功信封 data={ok:true}
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          ok: {type: boolean, enum: [true]}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "500": {$ref: "#/components/responses/Error"}
+  /admin/feedbacks/{id}/archive:
+    parameters:
+      - {in: path, name: id, required: true, schema: {type: string}}
+    post:
+      tags: [feedback, admin]
+      summary: 归档反馈
+      responses:
+        "200": {$ref: "#/components/responses/Envelope"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "500": {$ref: "#/components/responses/Error"}
+  /admin/feedbacks/{id}/unarchive:
+    parameters:
+      - {in: path, name: id, required: true, schema: {type: string}}
+    post:
+      tags: [feedback, admin]
+      summary: 取消归档反馈
+      responses:
+        "200": {$ref: "#/components/responses/Envelope"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "500": {$ref: "#/components/responses/Error"}
+
   /admin/settings/appearance/live2d:
     post:
       tags: [admin]
@@ -1234,6 +1404,7 @@ paths:
           $ref: "#/components/responses/Error"
         "404":
           $ref: "#/components/responses/Error"
+
   /agent/sessions:
     get:
       tags: [agent]
@@ -1377,6 +1548,56 @@ paths:
           $ref: "#/components/responses/Error"
         "404":
           $ref: "#/components/responses/Error"
+
+  /agent/conversations:
+    get:
+      tags: [agent]
+      summary: 读取当前用户在画布中参与的 Agent 对话
+      description: 只读目录，不创建运行或调用模型。按最新轮 createdAt、id 倒序；即使对话后来换绑画布，latestRunId、status、revision、cleanupPending 仍来自该对话全局最新一轮。仅返回当前登录用户的记录，画布必须属于当前用户。
+      parameters:
+        - in: query
+          name: canvasId
+          required: true
+          schema: { type: string, maxLength: 80 }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 100, default: 100 }
+        - in: query
+          name: before
+          description: 上一页返回的不透明 nextCursor
+          schema: { type: string, maxLength: 512 }
+      responses:
+        "200":
+          description: 信封 data 为 items（id、canvasId、title、latestRunId、status、revision、cleanupPending、createdAt、updatedAt）和可选 nextCursor；没有记录时 items 为空数组
+        "400":
+          description: 画布 ID、limit 或分页游标无效
+        "404":
+          description: 画布不存在或不属于当前用户
+  /agent/conversations/{id}/runs:
+    get:
+      tags: [agent]
+      summary: 按时间顺序恢复当前用户的完整 Agent 对话轮次
+      description: 仅返回当前用户、同一 conversationId 的不可变轮次，包含跨页面换绑画布后的轮次。按 createdAt、id 升序分页；每轮默认带尾部事件窗口，完整事件使用运行详情 fromStart 和 sinceSeq 分页读取。读取不恢复执行或重复调用工具。
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, maxLength: 80 }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 100, default: 100 }
+        - in: query
+          name: after
+          description: 上一页返回的不透明 nextCursor
+          schema: { type: string, maxLength: 512 }
+      responses:
+        "200":
+          description: 信封 data 为 items（与 data.run 相同的运行视图，含 conversationId、userPrompt、idempotencyKey）和可选 nextCursor
+        "400":
+          description: 会话 ID、limit 或分页游标无效
+        "404":
+          description: 会话不存在或不属于当前用户
+
   /agent/runs:
     post:
       tags: [agent]
@@ -1390,7 +1611,7 @@ paths:
               $ref: "#/components/schemas/CloudAgentRequest"
       responses:
         "200":
-          description: 信封 data.run，包含新一轮 id、sessionId、surface、canvasId、status、permissionMode、model 及时间
+          description: 信封 data.run，包含新一轮 id、sessionId、surface、conversationId、userPrompt、idempotencyKey、canvasId、status、permissionMode、model 及时间
         "400":
           description: 参数、能力、模型或预算不符合要求，未创建任务
         "409":
@@ -1405,8 +1626,8 @@ paths:
       parameters:
         - in: query
           name: fromStart
-          description: 从首条事件读取；不能与非零 sinceSeq 同用
-          schema: { type: string, enum: ["1"] }
+          description: true（旧客户端传 1 亦可）时从 sinceSeq 之后的首条事件开始读取（sinceSeq=0 时从 seq=1 开始）；省略时 sinceSeq=0 仍返回默认尾部窗口。用于多端首次恢复完整历史，分页追平用 latestSeq 与 eventCount 判断。
+          schema: { type: boolean, default: false }
         - in: query
           name: sinceSeq
           required: false
@@ -1421,7 +1642,7 @@ paths:
         "200":
           description: 信封 data.run（含 events 与 eventSeqBase / eventCount / latestSeq / eventsTruncated）
         "400":
-          description: sinceSeq 或 eventLimit 不是整数或超出范围
+          description: fromStart 不是布尔值，或 sinceSeq、eventLimit 不是整数或超出范围
         "404":
           description: 轮次不存在或不属于当前用户
   /agent/runs/{id}/messages:
@@ -1440,7 +1661,7 @@ paths:
         "200":
           description: 信封 data.run（新的 ID）
         "409":
-          description: 父轮仍在执行或终态收尾、幂等键冲突，或画布/首页会话已有另一轮 Agent 占用。占用拒绝返回 reason=canvas_agent_busy，details 包含 canvasId（首页创作为空）和拒绝时观察到的 agent（runId、status、cleanupPending）。首页请求指向旧父轮时返回 reason=agent_session_stale_parent，details 另含 sessionId；同步最新会话后由用户重新发送，不静默改换父轮。本次未创建任务或预留积分，不自动重试。相同请求的幂等回放优先返回已存在轮次；普通幂等键冲突保持 reason=conflict，不代表此前未知提交未被接受。
+          description: 父轮仍在执行或终态收尾、幂等键冲突，或画布/首页会话已有另一轮 Agent 占用。占用拒绝返回 reason=canvas_agent_busy，details 包含 canvasId（首页创作为空）和拒绝时观察到的 agent（runId、status、cleanupPending）。旧父轮已有后续轮次时，首页会话返回 reason=agent_session_stale_parent（details 含 sessionId），画布对话返回 reason=agent_conversation_stale_parent；客户端应同步最新历史，不能自动重发。原请求幂等回放优先于旧父轮检查。本次未创建任务或预留积分，不自动重试；普通幂等键冲突保持 reason=conflict，不代表此前未知提交未被接受。
   /agent/runs/{id}/interjections:
     parameters:
       - $ref: "#/components/parameters/AgentRunID"
@@ -2552,6 +2773,62 @@ components:
       in: cookie
       name: open_ai_canvas_session
   schemas:
+    FeedbackAttachment:
+      type: object
+      required: [id, name, type, url, size, mimeType]
+      properties:
+        id: {type: string}
+        name: {type: string}
+        type: {type: string, enum: [image, video]}
+        url: {type: string}
+        size: {type: integer, format: int64, minimum: 0}
+        mimeType: {type: string}
+    UserFeedback:
+      type: object
+      required: [id, userId, userName, userEmail, contact, type, title, content, attachments, environment, status, adminReply, archived, createdAt, updatedAt]
+      properties:
+        id: {type: string}
+        userId: {type: string}
+        userName: {type: string}
+        userEmail: {type: string}
+        contact: {type: string}
+        type: {type: string, enum: [bug, feature, improvement, other]}
+        title: {type: string, description: 最多 200 个 UTF-8 字节}
+        content: {type: string, description: 最多 10000 个 UTF-8 字节}
+        attachments: {type: string, description: JSON-encoded array of FeedbackAttachment}
+        environment: {type: string, description: JSON-encoded client environment object}
+        status: {type: string, enum: [pending, processing, resolved, closed, archived]}
+        adminReply: {type: string}
+        repliedAt: {type: string, format: date-time, nullable: true}
+        archived: {type: boolean}
+        archivedAt: {type: string, format: date-time, nullable: true}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+    FeedbackSubmission:
+      type: object
+      required: [title, content]
+      properties:
+        type: {type: string, enum: [bug, feature, improvement, other]}
+        title: {type: string, minLength: 1, description: 最多 200 个 UTF-8 字节}
+        content: {type: string, minLength: 1, description: 最多 10000 个 UTF-8 字节}
+        contact: {type: string}
+        attachments: {type: string, description: JSON-encoded array of FeedbackAttachment}
+        environment: {type: string, description: JSON-encoded client environment object}
+    FeedbackAdminUpdate:
+      type: object
+      properties:
+        status: {type: string, enum: [pending, processing, resolved, closed]}
+        adminReply: {type: string}
+        archived: {type: boolean}
+    FeedbackListResult:
+      type: object
+      required: [list, total, page, limit]
+      properties:
+        list: {type: array, items: {$ref: "#/components/schemas/UserFeedback"}}
+        total: {type: integer, format: int64}
+        page: {type: integer, minimum: 1}
+        limit: {type: integer, minimum: 1, maximum: 100}
+
     LoginLog:
       type: object
       properties:

@@ -5,3 +5,6 @@ import "./ai-art-critique";
 import "./media-conversion";
 import "./editor/editor-shell";
 import "./design/design-studio";
+import "./user-feedback";
+
+export * from "./user-feedback";

@@ -130,6 +130,9 @@ func (r *Repository) CreateTaskWithCreditReservation(task *model.Task, order *mo
 		if err := requireActiveAgentSessionForTask(tx, task); err != nil {
 			return err
 		}
+		if err := repo.requireCurrentCloudAgentParent(task); err != nil {
+			return err
+		}
 		if err := r.requireActiveLogicalModelForTask(tx, task); err != nil {
 			return err
 		}
@@ -162,6 +165,9 @@ func (r *Repository) CreateTaskWithActiveLimit(task *model.Task, activeTaskLimit
 			return err
 		}
 		if err := requireActiveAgentSessionForTask(tx, task); err != nil {
+			return err
+		}
+		if err := repo.requireCurrentCloudAgentParent(task); err != nil {
 			return err
 		}
 		if err := r.requireActiveLogicalModelForTask(tx, task); err != nil {
