@@ -8,6 +8,7 @@ import { AppModal } from "@/components/ui/product/app-modal";
 import { TRANSITION_LABEL } from "@/lib/drama/storyboard";
 import type { DramaCast, DramaEpisodeDetail, DramaModelChoice, DramaSegment, DramaSegmentReferencePatch, DramaShot, DramaShotPatch, DramaTake, DramaTransition } from "@/services/api/drama";
 import { ReferenceBoard } from "./segment-references";
+import { SegmentPromptRewrite } from "./segment-prompt-rewrite";
 import { dramaChoiceKey, dramaVideoResolutionValue } from "@/lib/drama/model-choice";
 import { formatVideoResolutionLabel } from "@/lib/video-generation-options";
 
@@ -66,6 +67,7 @@ type Props = {
     reprocessing: boolean;
     onReprocess: (segment: DramaSegment) => void;
     defaultVideoModel: DramaModelChoice;
+    promptModel?: DramaModelChoice;
     /** 作品指定的视频分辨率；换模型时给不出的置灰。 */
     videoResolution?: string;
     onOpenCast: (castId: string) => void;
@@ -90,6 +92,7 @@ export function SegmentDialog({
     writing,
     reprocessing,
     defaultVideoModel,
+    promptModel,
     videoResolution,
     onClose,
     onNavigate,
@@ -130,7 +133,8 @@ export function SegmentDialog({
             aria-label={segment ? `第 ${segment.index + 1} 段` : "剧情段"}
         >
             {segment && detail ? (
-                <div className="drama-sd">
+                // 整棵内容树用本段 id 做 key：左右切换时一次卸掉旧段。不要给同级子组件复用同一个 segment.id，React 会把旧卡片留在树上。
+                <div className="drama-sd" key={segment.id}>
                     <header className="drama-sd-head">
                         <div className="min-w-0">
                             <div className="drama-eyebrow">
@@ -169,7 +173,6 @@ export function SegmentDialog({
                     <div className="drama-sdx-body">
                         <main className="drama-sdx-main thin-scrollbar">
                             <SegmentToolbar
-                                key={segment.id}
                                 segment={segment}
                                 aspectRatio={aspectRatio}
                                 busy={busy}
@@ -179,18 +182,17 @@ export function SegmentDialog({
                                 onGenerate={(model) => onGenerate(segment, model)}
                                 onWritePrompt={() => onWritePrompt(segment)}
                             />
-                            <ReferenceBoard
-                                key={segment.id}
-                                projectId={detail.episode.projectId}
+                            <ReferenceBoard projectId={detail.episode.projectId} segment={segment} shots={shots} castById={castById} busy={busy} onSave={(patch) => onSaveReferences(segment, patch)} onOpenCast={onOpenCast} onOpenAssets={onOpenAssets} />
+                            <SegmentPrompt
                                 segment={segment}
-                                shots={shots}
+                                projectId={detail.episode.projectId}
+                                episodeId={detail.episode.id}
+                                promptModel={promptModel}
                                 castById={castById}
-                                busy={busy}
-                                onSave={(patch) => onSaveReferences(segment, patch)}
-                                onOpenCast={onOpenCast}
-                                onOpenAssets={onOpenAssets}
+                                writing={writing}
+                                onSave={(override) => onSavePrompt(segment, override)}
+                                onWrite={() => onWritePrompt(segment)}
                             />
-                            <SegmentPrompt key={segment.id} segment={segment} castById={castById} writing={writing} onSave={(override) => onSavePrompt(segment, override)} onWrite={() => onWritePrompt(segment)} />
                             <SegmentReceipt segment={segment} />
                             <section className="drama-sdx-section" aria-label="本段镜头">
                                 <div className="drama-sdx-section-head">
@@ -592,7 +594,25 @@ const PROMPT_EDITOR_MAX = 560;
  * 完整视频提示词：与画布视频节点的提示词面板一致，正文里的“参考图N”显示为带缩略图的引用，输入 @ 可插入本段参考图。
  * 提交时按所选模型的实际图片顺序编译引用编号；编辑内容保留本段的资产编号。
  */
-function SegmentPrompt({ segment, castById, writing, onSave, onWrite }: { segment: DramaSegment; castById: Map<string, DramaCast>; writing: boolean; onSave: (override: string) => void; onWrite: () => void }) {
+function SegmentPrompt({
+    segment,
+    projectId,
+    episodeId,
+    promptModel,
+    castById,
+    writing,
+    onSave,
+    onWrite,
+}: {
+    segment: DramaSegment;
+    projectId: string;
+    episodeId: string;
+    promptModel?: DramaModelChoice;
+    castById: Map<string, DramaCast>;
+    writing: boolean;
+    onSave: (override: string) => void;
+    onWrite: () => void;
+}) {
     const [draft, setDraft] = useState(segment.videoPrompt);
     const [editorHeight, setEditorHeight] = useState(PROMPT_EDITOR_MIN);
     const [showHeader, setShowHeader] = useState(false);
@@ -636,6 +656,20 @@ function SegmentPrompt({ segment, castById, writing, onSave, onWrite }: { segmen
                 ))}
                 <small>正文可直接修改</small>
             </div>
+            {promptModel ? (
+                <SegmentPromptRewrite
+                    projectId={projectId}
+                    episodeId={episodeId}
+                    segment={segment}
+                    prompt={draft}
+                    model={promptModel}
+                    disabled={busy || writing}
+                    onApply={(next) => {
+                        setDraft(next);
+                        onSave(next === segment.generated.trim() ? "" : next);
+                    }}
+                />
+            ) : null}
             {notice && segment.videoPrompt ? <PromptNotice segment={segment} text={notice} /> : null}
             {request.header ? (
                 <div className="drama-sdx-prefix" aria-label="提交时加在开头的参考图说明">
