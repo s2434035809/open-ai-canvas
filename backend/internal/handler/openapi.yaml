@@ -1848,8 +1848,14 @@ paths:
   /model-catalog:
     get:
       tags: [models]
+      security:
+        - {}
+        - sessionCookie: []
       summary: 获取创作端模型目录
       description: |
+        游客可读取默认用户分组允许的脱敏模型目录与参考价格；登录后按当前账号分组展示。
+        无 Cookie 时，X-Canvas-Expected-User 为空或为 guest 才按游客读取；其他预期身份与携带的无效会话仍执行身份校验。
+        目录浏览不授予生成权限，报价、能力筛选和任务接口继续要求登录。
         固定 source=system，channels 直接来自系统渠道下的模型列表，models 为空数组；不反查逻辑模型。
         一级跨渠道按 displayName 分组，二级显示 channelLabel；模型请求仍使用 channelId + modelKey 定位。
         channelLabel 是后台渠道模型创建和更新时配置的渠道展示名，去除首尾空白后最多 80 字，空字符串表示使用所属渠道名称。
@@ -2115,6 +2121,7 @@ paths:
       summary: 按对象或字段变更写入画布
       description: |
         请求只提交对象级或字段级 operations，不提交整批画布快照。
+        create_canvas 的初始字段通过 patch 提交；空白画布可只提交标题，未关联项目的 projectId 可省略或为 null、空字符串。
         mutationId 是一次请求的幂等身份；响应丢失、断网、刷新或后台重试时必须复用同一个 mutationId 与原始 operations。
         更新、删除和连接操作要求目标存在并通过对象基线校验；同一字段冲突不会覆盖远端修改。
       requestBody:
@@ -2159,7 +2166,7 @@ paths:
         "200":
           description: 信封 data.project 返回当前画布摘要，data.mutationId 返回原 mutationId
         "400":
-          description: 请求、字段、对象基线或素材引用格式不合法
+          description: 请求、字段、对象基线或素材引用格式不合法；后端 canvas operations rejected 日志记录失败阶段及安全诊断
         "401":
           description: 未登录
         "404":

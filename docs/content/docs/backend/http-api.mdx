@@ -170,6 +170,29 @@ Agent 通过 `mcp_list_tools` 分三步读取连接目录、指定连接的工�
 | `DELETE /api/admin/pose-library/items/:id` | 删除条目及其图片目录 |
 | `POST /api/admin/pose-library/bulk` | `{ action: "enable"\|"disable"\|"delete", ids?: string[] }` 或 `{ action, sourceKey?, system }`；不指定条目时必须给体系，避免误删全库。返回 `data={affected}` |
 
+## 用户积分历史
+
+`GET /api/wallet` 使用登录 Cookie，仅返回当前用户的账户、积分策略与历史，响应为 `data={account,entries,total,page,pageSize,policy}`。`page` 从 1 开始，`pageSize` 默认 30、最大 100。
+
+消费历史按计费订单合并，服务端在分页前将每个 `billing_orders` 订单投影为一条 `type="billing"` 记录；该订单对应的冻结、实收和释放流水不再单独占行。充值、兑换、赠送、推广返佣及其他没有关联计费订单的积分变动仍独立展示。`total` 为合并后的记录数，按订单创建时间或独立流水创建时间倒序排列，同一时间按 ID 倒序稳定分页。
+
+订单记录包含 `id`、`billingOrderId`、`billingStatus`、`model`、`scene`、`note`、`createdAt`，金额单位为微积分（1000000 = 1 积分）：
+
+| 字段 | 含义 |
+| --- | --- |
+| `reservedMicrocredits` | 订单原预留金额 |
+| `chargedMicrocredits` | 已结算订单的实际消耗；未结算时不得将该字段的 0 展示为免费 |
+| `refundedMicrocredits` | 未使用的预留释放额，或整单退回额；不能再从实际消耗中扣减 |
+| `amountMicrocredits` | 仅独立积分流水使用的带符号金额，订单记录不使用此字段 |
+
+已结算订单主文案显示「模型调用 · 实际消耗 X 积分」，明细显示原预留与释放金额；实际费用超过预留时显示补扣差额。`reserved` / `running` 显示待结算及冻结金额，`uncertain` 显示费用待核对，`refunded` 显示已退回、未扣费。方舟素材组沿用场景名称与说明。
+
+可选 `type` 筛选：`all`（默认）返回全部；`expenses` 返回所有状态的计费订单及独立消费、退款流水；`consume` 返回已结算订单及独立消费流水；`refund` 返回整单已退回订单及独立退款流水，不包含已结算订单的差额释放；`income` 返回已入账的在线充值、兑换码、后台调整（包括加分与扣减）、注册/签到奖励和推广返佣。筛选在分页前执行，各分类的 `total` 独立计算。
+
+积分中心在「积分消耗历史」左侧提供「充值记录」，分别查询 `expenses` 和 `income`，切换分类从第一页开始。在线充值通过同一用户的支付订单关联渠道，返回 `paymentProviderId` 和 `paymentProviderName`，显示「充值渠道：渠道名称」；渠道不在当前插件注册表时显示原渠道 ID。兑换码显示「兑换码充值」，后台加分与扣减均显示「后台调整」并保留正负金额、备注与入账时间。待支付订单不会出现在充值记录中，可在「我的订单」查看。
+
+管理员用户流水接口仍返回原始流水。本变更仅调整用户历史的读取与展示，不修改账本、余额或结算过程，无数据库迁移。
+
 ## 注册与签到积分策略
 
 `GET /api/admin/settings/credits` 和 `PATCH /api/admin/settings/credits` 均要求管理员，返回 `data={policy}`。PATCH 提交完整策略：`signupBonusMicrocredits`、`checkinBonusMicrocredits`、`defaultMultiplierBasisPoints`、`modelMultiplierBasisPoints`；停止赠送只将前两项设为 0，保留倍率。金额为微积分（1000000 = 1 积分），倍率为万分比（10000 = 1 倍）。
@@ -374,6 +397,14 @@ handle 放错端点、格式错误或行 ID 不存在时，工具错误回执提
 
 模型 HTTP 失败及经过 Provider 错误转换的业务失败，在通用提示后追加经过过滤的 `；上游：具体原因`，供任务错误和画布卡片展示内容安全、提示词、尺寸等可操作信息。只读取上游 `error` / `message` / `msg` / `detail` 消息字段，不回传整个 JSON；消息中的 HTTP(S) URL 隐藏，包含余额、账务、凭据、请求诊断或 HTML 的消息不追加原文，保留通用分类提示。后台响应拦截规则仍对最终用户文案生效；不会修改历史任务错误或改变重试、退款策略。
 
+## 相对深度视频处理
+
+视频节点「相对深度」复用 `POST /api/tasks`：`type=canvas_video`、`operation=depth`，`input.config` 指向管理员配置的系统渠道与 `volcengine-mediakit-video-depth` 模型，`input.referenceVideos` 仅含一个 `storageKey=resource:<id>` 的源视频。无需新接口或数据表。独立插件 `volcengine-mediakit-depth` 默认关闭，启用和凭据沿用插件中心与系统渠道合同。
+
+任务入口重新校验当前用户的资源归属、就绪状态和源时长；时长上限默认且最大 600 秒，可由后台收紧。不接受图片、音频或任意 URL 代替源资源，不信任客户端源时长、`videoProcessing` 标记、输出分辨率、帧率档和 provider 扩展键。执行仍由宿主转换为供应商可访问的媒体地址并校验出站目标。
+
+按秒计价保留独立 `depth` 操作，按源时长向上取整预扣，成功后按输出资源探测时长或 `usage.outputDurationSeconds` 结算，缺少输出时长进入待核对。HEVC 临时结果由现有任务媒体流程下载并保存，沿用任务归属、配额、取消与失败恢复。官方分辨率、播放和真实账单边界见[相对深度视频](/docs/backend/video-depth)。
+
 ## 资源访问与 OSS/CDN 分发
 
 普通上传、分片合并及 URL 导入按内容签名识别 MIME，不以客户端声明或文件扩展名决定媒体类型；无法识别的内容仍可作为附件上传。上传标识对应的 ready/failed 重试均先读取内容，并核对检测后的 MIME、资源类型与大小；不一致返回 409，不覆盖原对象。这是内容判型与元数据一致性校验，不是完整格式解码或内容摘要去重。
@@ -545,7 +576,9 @@ CANVAS_BACKEND_DATA_DIR=/明确的数据目录 ./migrate-schema repair-canvas-re
 
 ### 用户模型目录
 
-`GET /model-catalog` 固定返回 `source=system`，直接查询所有启用系统渠道下的渠道模型，目录数据在 `channels[].models[]`，`models` 固定为空数组。不受逻辑模型开关影响，不反查逻辑模型或供应线路。每项的 `modelKey` 是调用标识，`displayName` 是一级分组展示名（未设置时归入 `未分类`），`icon` 是模型图标键，`channelLabel` 是二级渠道展示名。后台渠道模型创建与更新请求使用相同的 `channelLabel` 字段；服务端去除首尾空白后限制为 80 字，空值或与上游模型 ID 相同的值表示不固化该名称，读取时回退到上游模型 ID（默认与上游 ID 保持一致，上游改名时自动跟随）。
+`GET /model-catalog` 固定返回 `source=system`，查询当前分组允许的启用系统渠道下的渠道模型，目录数据在 `channels[].models[]`，`models` 固定为空数组。不受逻辑模型开关影响，不反查逻辑模型或供应线路。每项的 `modelKey` 是调用标识，`displayName` 是一级分组展示名（未设置时归入 `未分类`），`icon` 是模型图标键，`channelLabel` 是二级渠道展示名。后台渠道模型创建与更新请求使用相同的 `channelLabel` 字段；服务端去除首尾空白后限制为 80 字，空值或与上游模型 ID 相同的值表示不固化该名称，读取时回退到上游模型 ID（默认与上游 ID 保持一致，上游改名时自动跟随）。
+
+游客无会话 Cookie 时，`X-Canvas-Expected-User` 为空或为 `guest` 均可浏览默认用户分组的目录及参考价格；登录后按真实账号分组刷新。不公开上游地址、API Key、内部渠道名称和成本配置；默认分组未开放的渠道不会出现在游客目录中。携带无效会话或非 `guest` 的预期用户头时仍校验身份，不降级为游客。`POST /model-catalog/available`、报价与任务创建继续要求登录，目录可见不代表游客可以调用模型。
 
 文本模型额外返回 `textWire`（`chat-completion` / `responses` / `claude-api`），由协议插件的 `create.path` 识别，不看协议 ID；识别不出时省略。浏览器直连系统代理的提示词优化、编辑器助手和美术点评按它选择 `/chat/completions`、`/responses` 或 `/messages`。`GET /plugins/catalog` 的 provider 同样返回 `textWire`，并在插件 `auth.secretField` 指向 Secret Key 时返回 `requiresSecretKey: true`。系统渠道代理只放行内置合同或插件声明的 POST 路径，出站鉴权按插件 `auth` 声明写，详见 [统一插件运行时](/docs/backend/protocol-plugins)。
 
@@ -694,7 +727,7 @@ Token 报价的 `estimated` 为 `true`，`quantity` 是预留 Token 数。`inten
 
 云端 Agent、媒体生成终态回写、预演台、创作提交以及 LibTV/TapNow 导入都复用同一 operations 服务。Agent 事件中的 `canvasPatch` 只是一种有界通知；过大、删除或无法完整表达的变更使用 `requiresRefresh: true`，客户端重新读取后按未确认请求继续重放。用户界面不提供版本记录、加载云端版、覆盖云端或手动重试入口，不弹出同步报错；失败请求由后台自动重放，未确认时不显示已同步。同账号同输入框并发输入按共同基线的文字增删合并；租约只约束服务端写入，客户端保持可编辑，每批保存确认后释放凭据供另一端接手。存在未确认请求时，先重放 receipt，再合入后续输入，避免响应丢失后重复插入本机文字。
 
-平移和缩放只持久化浏览器视口，不生成远端 operations。保存日志仅记录请求/链路 ID、画布/用户 ID、版本、节点数量变化及 HTTP 状态，不记录正文、提示词或媒体 URL。
+平移和缩放只持久化浏览器视口，不生成远端 operations。保存日志记录请求/链路 ID、画布/用户 ID、版本、节点数量变化及 HTTP 状态；operations 拒绝时额外记录 `canvas operations rejected`，区分请求解析和业务写入阶段，包含业务错误原因及 JSON 字段类型/位置等安全诊断，不记录正文、字段值、提示词、媒体 URL 或凭据。空白创建示例和日志字段见[画布 operations 同步协议](./canvas-operations-sync)。
 
 operations 的结构化配额在提交事务内实时统计账号的素材/画布数量和 JSON 字节数，不为画布保存扫描任务正文及 API 请求/响应日志。接口请求、响应、容量上限及错误语义均不变；性能排查应分别记录成功写入、同请求重放和冲突请求的耗时，冲突请求提前退出不能代表完整提交耗时。
 
